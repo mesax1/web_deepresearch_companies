@@ -2,19 +2,20 @@
 
 <img width="1388" height="298" alt="full_diagram" src="https://github.com/user-attachments/assets/12a2371b-8be2-4219-9b48-90503eb43c69" />
 
-Deep research has broken out as one of the most popular agent applications. This is a simple, configurable, fully open source deep research agent that works across many model providers, search tools, and MCP servers. It's performance is on par with many popular deep research agents ([see Deep Research Bench leaderboard](https://huggingface.co/spaces/Ayanami0730/DeepResearch-Leaderboard)).
+Modified the Langgraph Open Deep Research, to build a Company Deep Research, which is a specialized, configurable, fully open source company due diligence and research agent optimized for bid management and business intelligence. The system has been enhanced with systematic data collection processes that work across many model providers, search tools, and MCP servers to provide comprehensive company analysis suitable for professional decision-making.
 
 <img width="817" height="666" alt="Screenshot 2025-07-13 at 11 21 12 PM" src="https://github.com/user-attachments/assets/052f2ed3-c664-4a4f-8ec2-074349dcaa3f" />
 
 ### 🔥 Recent Updates
 
+**Latest Update**: **Specialized Company Research Agent** - Transformed into a dedicated company due diligence system with:
+- **Systematic Discovery Phase**: Website mapping, company identifier collection, and initial profiling
+- **Structured Data Collection**: Parallel processing across three critical areas for bid management
+- **Professional Intelligence Focus**: Optimized for business decision-making and tender preparation
+
 **August 7, 2025**: Added GPT-5 and updated the Deep Research Bench evaluation w/ GPT-5 results.
 
-**August 2, 2025**: Achieved #6 ranking on the [Deep Research Bench Leaderboard](https://huggingface.co/spaces/Ayanami0730/DeepResearch-Leaderboard) with an overall score of 0.4344. 
-
-**July 30, 2025**: Read about the evolution from our original implementations to the current version in our [blog post](https://rlancemartin.github.io/2025/07/30/bitter_lesson/).
-
-**July 16, 2025**: Read more in our [blog](https://blog.langchain.com/open-deep-research/) and watch our [video](https://www.youtube.com/watch?v=agGiWUpxkhg) for a quick overview.
+**August 2, 2025**: Achieved #6 ranking on the [Deep Research Bench Leaderboard](https://huggingface.co/spaces/Ayanami0730/DeepResearch-Leaderboard) with an overall score of 0.4344.
 
 ### 🚀 Quickstart
 
@@ -53,7 +54,113 @@ This will open the LangGraph Studio UI in your browser.
 - 📚 API Docs: http://127.0.0.1:2024/docs
 ```
 
-Ask a question in the `messages` input field and click `Submit`. Select different configuration in the "Manage Assistants" tab.
+Provide company information in the structured input format and click `Submit`. The agent will conduct systematic due diligence research. Select different configuration in the "Manage Assistants" tab.
+
+## 🏢 Company Research Capabilities
+
+### Input Format
+The agent now expects structured company information instead of free-text queries:
+
+```json
+{
+  "company_info": {
+    "company_name": "Example Company A/S",
+    "cvr_number": "12345678",
+    "country": "Denmark",
+    "primary_industry": "Technology Services"
+  }
+}
+```
+
+### Research Process Flow
+
+#### 1. **Discovery Phase** 🔍
+- **Website Mapping**: Analyzes company website structure and key pages
+- **Identifier Collection**: Gathers VAT numbers, CVR numbers, business licenses
+- **Initial Profiling**: Builds foundational company overview
+- **Source Discovery**: Maps available data sources for systematic collection
+
+#### 2. **Systematic Collection Phase** 📊
+Parallel processing across three critical information areas:
+
+**Info Area 1: Company Foundation Documents**
+- Corporate Overview (registration details, legal structure, ownership)
+- Mission/Vision/Values (from "About Us" pages)
+- Company History & Milestones (growth track record)
+- Organizational Structure (leadership, key personnel, offices/locations)
+
+**Info Area 2: Financial & Legal Standing**
+- Annual Reports (last 3-5 years for financial stability proof)
+- Credit ratings (credibility for large tenders)
+- Insurance certificates (professional indemnity, liability coverage)
+- Legal entity verification (VAT numbers, company registration)
+
+**Info Area 3: Products/Services Portfolio**
+- Service descriptions (detailed capability statements)
+- Product specifications (technical documentation)
+- Case studies (proof of delivery - minimum 5-10 strong cases)
+- Client references (with contact details where possible)
+- Project portfolios (similar work to what they'll bid for)
+
+### Source Prioritization
+- **Foundation Documents**: Company website, CVR registry (Denmark), LinkedIn, press releases
+- **Financial & Legal**: CVR.dk, investor relations pages, Bisnode/credit agencies, annual reports
+- **Products/Services**: Company website sections, news, press releases, industry publications
+
+### Parallel Research Strategy
+The supervisor orchestrates multiple specialized agents:
+- **Agent 1**: Company Foundation Documents (website scraping, CVR registry)
+- **Agent 2**: Financial & Legal Standing (annual reports, credit ratings)
+- **Agent 3**: Products/Services Portfolio (website sections, case studies)
+- **Agent 4**: LinkedIn data extraction (personnel, company updates)
+- **Agent 5**: News and press release aggregation (recent developments)
+
+## 🔧 Technical Changes
+
+### Agent Architecture Modifications
+
+#### Removed Components
+- **Clarify With User Step**: Eliminated the clarification phase to streamline direct company research
+- **Generic Message Processing**: Replaced free-text input handling with structured company data processing
+
+#### New Agent Flow
+1. **Discovery Phase Agent** (formerly `write_research_brief`)
+   - Conducts website mapping and sitemap analysis
+   - Collects company identifiers (CVR, VAT, business licenses)
+   - Builds initial company profile
+   - Prepares systematic data collection strategy
+
+2. **Systematic Collection Supervisor** (enhanced `research_supervisor`)
+   - Orchestrates parallel research across three information areas
+   - Manages specialized sub-agents for different data types
+   - Implements structured collection strategy for bid management needs
+
+### State Structure Updates
+- **Input State**: Now expects structured `CompanyInfo` with fields:
+  - `company_name` (required)
+  - `cvr_number` (optional, for Danish companies)
+  - `country` (required)
+  - `primary_industry` (required)
+- **Agent State**: Enhanced to carry company information throughout the research process
+
+### Prompt Engineering Enhancements
+
+#### New Specialized Prompts
+- **Discovery Phase Prompt**: Guides initial company discovery with specific objectives for website mapping and identifier collection
+- **Systematic Collection Supervisor Prompt**: Orchestrates parallel research across the three critical information areas with clear success criteria
+- **Source-Specific Instructions**: Tailored guidance for different data sources (CVR registry, company websites, financial databases)
+
+#### Removed Prompts
+- **Clarification Instructions**: No longer needed with structured input format
+- **Generic Research Transformation**: Replaced with company-specific discovery and collection prompts
+
+### Research Focus Areas
+The system now specifically targets information critical for bid management:
+1. **Company Foundation Documents** - Legal structure, history, organization
+2. **Financial & Legal Standing** - Stability proof, credit ratings, compliance
+3. **Products/Services Portfolio** - Capabilities, case studies, references
+
+This specialized approach ensures comprehensive due diligence suitable for professional business decision-making and tender preparation.
 
 ### ⚙️ Configurations
 
