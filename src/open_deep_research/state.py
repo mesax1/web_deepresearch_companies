@@ -94,3 +94,51 @@ class ResearcherOutputState(BaseModel):
     
     compressed_research: str
     raw_notes: Annotated[list[str], override_reducer] = []
+
+
+###################
+# React Agent State for Tender Research
+###################
+
+class ScratchpadEntry(BaseModel):
+    """Entry in the agent's scratchpad for tracking reasoning steps."""
+    
+    step: int = Field(description="Step number in the reasoning process")
+    type: str = Field(description="Type of entry: Thought, Action, or Observation")
+    content: str = Field(description="Content of the scratchpad entry")
+
+class IntermediateResult(BaseModel):
+    """Structured data gathered by tools during the reasoning process."""
+    
+    tool_name: str = Field(description="Name of the tool that generated this result")
+    result_data: dict = Field(description="Structured result data from the tool")
+    file_sources: list[str] = Field(default=[], description="File sources referenced in this result")
+    web_sources: list[str] = Field(default=[], description="Web sources referenced in this result")
+
+class ReactAgentState(MessagesState):
+    """Agent state for the LangGraph react agent with iterative reasoning loop."""
+    
+    user_query: str = Field(description="The user's original query")
+    tender_id: str = Field(description="Identifier for the current tender being analyzed")
+    chat_history: Annotated[list[dict], operator.add] = Field(default=[], description="Conversational context")
+    
+    # Cached situational awareness data
+    manifest_overview: dict = Field(default={}, description="Cached tender manifest overview data")
+    
+    # Agent's working memory and "Show Your Work" log (streamed to UI)
+    scratchpad: Annotated[list[ScratchpadEntry], operator.add] = Field(default=[], description="Agent's reasoning steps")
+    
+    # Structured data gathered by tools (used for final synthesis)
+    intermediate_results: Annotated[list[IntermediateResult], operator.add] = Field(default=[], description="Structured data from tool executions")
+    
+    # Loop control
+    iterations: int = Field(default=0, description="Counter to prevent infinite loops")
+    max_iterations: int = Field(default=10, description="Maximum allowed iterations")
+    
+    # Current plan and next actions
+    current_plan: str = Field(default="", description="Current plan from the planner node")
+    next_action: str = Field(default="", description="Next action to take")
+    
+    # Fast track optimization flags
+    is_simple_query: bool = Field(default=False, description="Flag indicating if this is a simple query for fast track")
+    confidence_score: float = Field(default=0.0, description="Confidence score for fast track optimization")

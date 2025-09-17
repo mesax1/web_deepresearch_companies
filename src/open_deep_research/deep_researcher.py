@@ -36,6 +36,7 @@ from open_deep_research.state import (
     ResearchQuestion,
     SupervisorState,
 )
+from open_deep_research.react_agent import react_agent
 from open_deep_research.utils import (
     anthropic_websearch_called,
     get_all_tools,
@@ -668,3 +669,7 @@ deep_researcher_builder.add_edge("final_report_generation", END)                
 
 # Compile the complete deep researcher workflow
 deep_researcher = deep_researcher_builder.compile()
+
+# React Agent for Tender Research
+# Import the pre-compiled react agent for tender research workflows
+tender_research_agent = react_agent

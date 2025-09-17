@@ -1,8 +1,9 @@
 {
     "dockerfile_lines": [],
-    "graphs": {
-      "Deep Researcher": "./src/open_deep_research/deep_researcher.py:deep_researcher"
-    },
+  "graphs": {
+    "Deep Researcher": "./src/open_deep_research/deep_researcher.py:deep_researcher",
+    "Tender Research Agent": "./src/open_deep_research/deep_researcher.py:tender_research_agent"
+  },
     "python_version": "3.11",
     "env": "./.env",
     "dependencies": [
