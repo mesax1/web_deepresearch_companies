@@ -54,7 +54,108 @@ This will open the LangGraph Studio UI in your browser.
 - 📚 API Docs: http://127.0.0.1:2024/docs
 ```
 
+## Agent Selection
+
+The system now provides **two specialized agents**:
+
+### 1. **Deep Researcher** (Company Due Diligence)
 Provide company information in the structured input format and click `Submit`. The agent will conduct systematic due diligence research. Select different configuration in the "Manage Assistants" tab.
+
+### 2. **Tender Research Agent**
+Select **"Tender Research Agent"** from the assistant dropdown in LangGraph Studio for the new React Agent workflow optimized for tender research and analysis.
+
+## Tender Research Agent Capabilities
+
+The **Tender Research Agent** is a specialized LangGraph React Agent designed for comprehensive tender document analysis and research. It implements an iterative Plan → Execute → Reflect reasoning loop with optimization triage for efficient query processing.
+
+### Architecture Overview
+
+```
+User Query → Triage Node → [Fast Track OR Deep Dive]
+                ↓
+            Orientation Node (Deep Dive only)
+                ↓
+            Planner Node ← ← ← ← ←
+                ↓                ↑
+            Tool Executor      ↑
+                ↓                ↑
+            Reflection Node → → ↑
+                ↓
+            Synthesizer Node → Final Answer
+```
+
+### Input Format for Tender Research
+
+```json
+{
+  "user_query": "What are the penalty clauses in the IT infrastructure tender?",
+  "tender_id": "tender_123",
+  "messages": [
+    {
+      "role": "human",
+      "content": "What are the penalty clauses in the IT infrastructure tender?"
+    }
+  ]
+}
+```
+
+### Key Features
+
+####  **Fast Track Optimization**
+- **Triage Node** evaluates query complexity and confidence
+- Simple queries with high confidence bypass full reasoning loop
+- Reduces latency for straightforward factual questions
+
+####  **Reasoning Transparency** 
+- Complete **scratchpad** shows agent's step-by-step thinking
+- All tool executions and observations are logged
+- "Show Your Work" approach builds user trust
+
+####  **Iterative Improvement**
+- **Reflection Node** evaluates tool effectiveness
+- Agent can modify approach based on results
+- Prevents getting stuck on poor retrieval results
+
+####  **Comprehensive Citations**
+- All answers include clear source references
+- File names, sections, and web sources tracked
+- Enables user verification and follow-up research
+
+### Foundational Tool Arsenal (5 Tools)
+
+1. **Consult_Tender_Manifest** - Rapid metadata access and document mapping
+2. **Targeted_Hybrid_Search** - Primary RAG with parent-child retrieval  
+3. **Iterative_Document_Analyzer** - MapReduce strategy for large documents
+4. **Web_Search** - External regulations and market intelligence
+5. **Wait_for_User_Input** - Collaborative ambiguity resolution
+
+### Usage Examples
+
+#### Basic Query
+```
+"What are the penalty clauses in this tender?"
+```
+
+#### Complex Analysis
+```
+"Perform a SWOT analysis of our competitive position based on the evaluation criteria and compare it with the technical requirements."
+```
+
+#### Document-Specific Search
+```
+"Summarize the entire Rammeaftale document focusing on performance requirements."
+```
+
+### Workflow Nodes
+
+- **Triage**: Fast track optimization for simple queries
+- **Orientation**: Situational awareness with tender context
+- **Planner**: Central reasoning engine with ReAct prompting
+- **Tool Executor**: Parallel tool execution
+- **Reflection**: Tool effectiveness evaluation
+- **Synthesizer**: Final answer generation with citations
+
+> **Detailed Documentation**: See [REACT_AGENT_GUIDE.md](./REACT_AGENT_GUIDE.md) for comprehensive technical documentation.
 
 ## 🏢 Company Research Capabilities
 
@@ -222,6 +323,45 @@ This creates `tests/expt_results/deep_research_bench_model-name.jsonl` with the 
 #### LangGraph Studio
 
 Follow the [quickstart](#-quickstart) to start LangGraph server locally and test the agent out on LangGraph Studio.
+
+**To use the Tender Research Agent:**
+1. Start the LangGraph server with the quickstart instructions above
+2. Open LangGraph Studio in your browser
+3. In the "Assistant" dropdown, select **"Tender Research Agent"**
+4. Provide your query in this format:
+   ```json
+   {
+     "user_query": "Your tender research question here",
+     "tender_id": "tender_123",
+     "messages": [{"role": "human", "content": "Your question"}]
+   }
+   ```
+5. Click "Submit" to run the agent
+
+#### Programmatic Usage
+
+You can also use the Tender Research Agent programmatically:
+
+```python
+from open_deep_research.react_agent import react_agent
+
+# Define input state
+input_state = {
+    "user_query": "What are the penalty clauses in the IT infrastructure tender?",
+    "tender_id": "tender_123",
+    "messages": [{"role": "human", "content": "What are the penalty clauses?"}]
+}
+
+# Run the agent
+result = react_agent.invoke(input_state)
+print(result["messages"][-1].content)
+
+# Stream the reasoning process
+for event in react_agent.stream(input_state):
+    if "scratchpad" in event:
+        for entry in event["scratchpad"]:
+            print(f"Step {entry.step} ({entry.type}): {entry.content}")
+```
 
 #### Hosted deployment
  
