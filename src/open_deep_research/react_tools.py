@@ -1,18 +1,31 @@
 """Foundational tools for the LangGraph react agent."""
 
-import asyncio
+import os
 from typing import Dict, List, Any, Optional
 from langchain_core.tools import tool
-from langchain_core.messages import HumanMessage
 from langchain.chat_models import init_chat_model
+from langchain_core.messages import HumanMessage
 from pydantic import BaseModel, Field
-import json
 
-# Initialize configurable model for tool usage
+from qdrant_client.http.models import Filter, FieldCondition, MatchValue
+
+from pymongo import MongoClient
+from bson import ObjectId
+
+from tool_utils import getVectorStore, CustomRetriever, get_proposal_id, get_proposal_files, get_proposal_summary, get_proposal_total_documents, get_proposal_compliance_matrix_analysis, get_proposal_files_summary
+
+from dotenv import load_dotenv
+load_dotenv()
+
+uri = os.getenv("MONGODB_URI")
+mongo_client = MongoClient(uri)
+db = mongo_client["org_1"]
+proposals = db["proposals"]
+proposal_files = db["proposal_files"]
+
 configurable_model = init_chat_model(
     configurable_fields=("model", "max_tokens", "api_key"),
 )
-
 
 class TenderOverview(BaseModel):
     """Schema for tender overview data."""
@@ -54,6 +67,22 @@ class AnalysisResult(BaseModel):
     key_findings: List[str] = Field(description="Key findings extracted")
     relevant_sections: List[str] = Field(description="Relevant document sections")
     file_id: str = Field(description="Analyzed file identifier")
+
+
+class FileMapping(BaseModel):
+    """Schema for mapping user references to file IDs with confidence scores."""
+    
+    user_reference: str = Field(description="The original user reference string")
+    file_id: str = Field(description="The mapped file ID")
+    file_name: str = Field(description="The mapped file name")
+    confidence: float = Field(description="Confidence score between 0.0 and 1.0", ge=0.0, le=1.0)
+    reasoning: str = Field(description="Brief explanation of why this mapping was chosen")
+
+
+class FileMappings(BaseModel):
+    """Schema for the complete file mapping result."""
+    
+    mapped_files: List[FileMapping] = Field(description="List of file mappings with confidence scores")
 
 
 # Mock data store for demonstration (in production, this would connect to actual databases)
@@ -100,8 +129,7 @@ async def consult_tender_manifest(
     tender_id: str,
     user_references: Optional[List[str]] = None
 ) -> Dict[str, Any]:
-    """
-    Consult the tender manifest for rapid access to metadata and summaries.
+    """Consult the tender manifest for rapid access to metadata and summaries.
     
     Args:
         action: Action to perform - 'get_overview', 'list_documents', or 'map_names_to_ids'
@@ -111,28 +139,36 @@ async def consult_tender_manifest(
     Returns:
         Dictionary containing the requested information
     """
-    if tender_id not in MOCK_TENDER_MANIFEST:
+    proposal = proposals.find_one({ "_id" : ObjectId(tender_id) })
+    if proposal is None:
         return {"error": f"Tender {tender_id} not found"}
-    
-    manifest = MOCK_TENDER_MANIFEST[tender_id]
+
+    summary = ""
+    analysis = proposal['compliance_matrix_analysis']
+    for _, v in analysis.items():
+        summary += f"{v}\n"
+
+    file_id = proposal['requirement_cluster_id']
+    files = proposal_files.find({ "cluster_id" : file_id })
+    total_documents = len(files)
     
     if action == "get_overview":
         return {
-            "tender_id": manifest.overview.tender_id,
-            "summary": manifest.overview.summary,
-            "total_documents": manifest.overview.total_documents
+            "tender_id": proposal._id,
+            "summary": summary,
+            "total_documents": total_documents
         }
     
     elif action == "list_documents":
         return {
             "documents": [
                 {
-                    "file_id": doc.file_id,
+                    "file_id": doc._id,
                     "file_name": doc.file_name,
-                    "document_type": doc.document_type,
-                    "summary": doc.summary
+                    "document_type": doc.file_extension,
+                    "summary": doc.requirements_summary["en"] if "en" in doc.requirements_summary else list(doc.requirements_summary.values())[0]
                 }
-                for doc in manifest.documents
+                for doc in files
             ]
         }
     
@@ -140,27 +176,96 @@ async def consult_tender_manifest(
         if not user_references:
             return {"error": "No user references provided for mapping"}
         
-        # Simple fuzzy matching for demonstration
-        mapped_results = []
-        for ref in user_references:
-            ref_lower = ref.lower()
-            for doc in manifest.documents:
-                if (ref_lower in doc.file_name.lower() or 
-                    ref_lower in doc.document_type.lower() or
-                    any(word in doc.summary.lower() for word in ref_lower.split())):
+        document_info = []
+        for doc in files:
+            doc_summary = doc.requirements_summary.get("en", list(doc.requirements_summary.values())[0] if doc.requirements_summary else "")
+            document_info.append({
+                "file_id": str(doc._id),
+                "file_name": doc.file_name,
+                "file_extension": doc.file_extension,
+                "summary": doc_summary
+            })
+
+        prompt = f"""
+You are tasked with mapping user reference strings to the most appropriate file IDs from a tender document collection.
+User References to Map: {', '.join(user_references)}
+Available Documents:
+{chr(10).join([f"- ID: {doc['file_id']}, Name: {doc['file_name']}, Type: {doc['file_extension']}, Summary: {doc['summary']}" for doc in document_info])}
+For each user reference, find the best matching document and provide:
+1. The exact file_id from the available documents
+2. A confidence score between 0.0 and 1.0 (1.0 = perfect match, 0.0 = no match)
+3. Brief reasoning for your choice
+Consider matches based on:
+- Exact filename matches
+- Partial filename matches
+- File extension matches
+- Content summary relevance
+- Semantic similarity
+Return your response in the following JSON format:
+{{
+  "mapped_files": [
+    {{
+      "user_reference": "original reference string",
+      "file_id": "matched_file_id",
+      "file_name": "matched_file_name",
+      "confidence": 0.95,
+      "reasoning": "Brief explanation of why this mapping was chosen"
+    }}
+  ]
+}}
+"""  
+        try:
+            model_with_structure = configurable_model.with_structured_output(FileMappings)
+            message = HumanMessage(content=prompt)
+            response = model_with_structure.invoke([message])
+            
+            mapped_results = []
+            for mapping in response.mapped_files:
+                mapped_results.append({
+                    "user_reference": mapping.user_reference,
+                    "file_id": mapping.file_id,
+                    "file_name": mapping.file_name,
+                    "confidence": mapping.confidence,
+                    "reasoning": mapping.reasoning
+                })
+            
+            return {"mapped_files": mapped_results}
+            
+        except Exception as e:
+            mapped_results = []
+            for ref in user_references:
+                ref_lower = ref.lower()
+                best_match = None
+                best_confidence = 0.0
+                
+                for doc in files:
+                    confidence = 0.0
+                    doc_summary = doc.requirements_summary.get("en", list(doc.requirements_summary.values())[0] if doc.requirements_summary else "")
+                    
+                    if ref_lower in doc.file_name.lower():
+                        confidence += 0.6
+                    if ref_lower in doc.file_extension.lower():
+                        confidence += 0.4
+                    if any(word in doc_summary.lower() for word in ref_lower.split()):
+                        confidence += 0.3
+                    
+                    if confidence > best_confidence:
+                        best_confidence = confidence
+                        best_match = doc
+                
+                if best_match and best_confidence > 0.1:
                     mapped_results.append({
                         "user_reference": ref,
-                        "file_id": doc.file_id,
-                        "file_name": doc.file_name,
-                        "confidence": 0.8  # Mock confidence score
+                        "file_id": str(best_match._id),
+                        "file_name": best_match.file_name,
+                        "confidence": min(best_confidence, 1.0),
+                        "reasoning": f"Fallback matching based on filename/content similarity (confidence: {best_confidence:.2f})"
                     })
-                    break
-        
-        return {"mapped_files": mapped_results}
+            
+            return {"mapped_files": mapped_results}
     
     else:
         return {"error": f"Unknown action: {action}"}
-
 
 @tool
 async def targeted_hybrid_search(
@@ -168,8 +273,7 @@ async def targeted_hybrid_search(
     tender_id: str,
     file_id_filters: Optional[List[str]] = None
 ) -> List[Dict[str, Any]]:
-    """
-    Primary RAG workhorse for deep content extraction using hybrid search.
+    """Primary RAG workhorse for deep content extraction using hybrid search.
     
     Args:
         query: Search query string
@@ -179,46 +283,38 @@ async def targeted_hybrid_search(
     Returns:
         List of relevant search results with content and metadata
     """
-    # Mock implementation - in production this would use Qdrant + Cohere rerank
-    results = []
-    
-    # Get available documents
-    if tender_id not in MOCK_TENDER_MANIFEST:
-        return [{"error": f"Tender {tender_id} not found"}]
-    
-    manifest = MOCK_TENDER_MANIFEST[tender_id]
-    documents_to_search = manifest.documents
-    
-    # Apply file filters if provided
-    if file_id_filters:
-        documents_to_search = [doc for doc in documents_to_search if doc.file_id in file_id_filters]
-    
-    # Mock search logic
-    query_lower = query.lower()
-    for doc in documents_to_search:
-        content = MOCK_DOCUMENT_CONTENT.get(doc.file_id, "No content available")
+    try:
+        proposal = proposals.find_one({ "_id" : ObjectId(tender_id) })
+        file_id = proposal['requirement_cluster_id']
+        current_filter = Filter(
+            must=[
+                FieldCondition(
+                    key="cluster_id",
+                    match=MatchValue(value=file_id)
+                )
+            ]
+        )
+        vectorstore = getVectorStore("proposal_testing")
+        retriever = CustomRetriever(
+            [vectorstore.as_retriever(search_kwargs={"filter": current_filter})],
+            k=50,
+            p=10,
+        )
         
-        # Simple relevance scoring based on keyword matching
-        relevance_score = 0.0
-        for word in query_lower.split():
-            if word in content.lower():
-                relevance_score += 0.2
-            if word in doc.summary.lower():
-                relevance_score += 0.1
+        documents = retriever.get_docs_without_callbacks(query)
         
-        if relevance_score > 0.1:  # Threshold for relevance
-            results.append({
-                "content": content,
-                "file_id": doc.file_id,
-                "file_name": doc.file_name,
-                "confidence_score": min(relevance_score, 1.0),
-                "document_type": doc.document_type
-            })
-    
-    # Sort by confidence score
-    results.sort(key=lambda x: x["confidence_score"], reverse=True)
-    return results[:5]  # Return top 5 results
-
+        context = "\n\n".join([
+            f"**Document: {doc.metadata.get('title', 'Unknown')}**\n{doc.page_content}"
+            for doc in documents
+        ])
+        
+        return {
+            "context": context,
+            "documents": documents,
+            "num_results": len(documents)
+        }
+    except Exception as e:
+        return {"error": f"Chunk search failed: {str(e)}", "documents": []}
 
 @tool
 async def iterative_document_analyzer(
@@ -226,8 +322,7 @@ async def iterative_document_analyzer(
     analysis_objective: str,
     tender_id: str
 ) -> Dict[str, Any]:
-    """
-    Analyze or summarize large documents using MapReduce strategy.
+    """Analyze or summarize large documents using MapReduce strategy.
     
     Args:
         file_id: Identifier for the specific document to analyze
@@ -281,8 +376,7 @@ async def iterative_document_analyzer(
 
 @tool
 async def web_search(query: str) -> List[Dict[str, Any]]:
-    """
-    Search external sources for regulations, legal definitions, and market intelligence.
+    """Search external sources for regulations, legal definitions, and market intelligence.
     
     Args:
         query: Search query for external information
@@ -309,20 +403,20 @@ async def web_search(query: str) -> List[Dict[str, Any]]:
     return mock_results
 
 
-@tool
-async def wait_for_user_input(clarification_question: str) -> str:
-    """
-    Wait for user input to resolve ambiguity or get clarification.
+# @tool
+# async def wait_for_user_input(clarification_question: str) -> str:
+#     """
+#     Wait for user input to resolve ambiguity or get clarification.
     
-    Args:
-        clarification_question: Question to ask the user for clarification
+#     Args:
+#         clarification_question: Question to ask the user for clarification
     
-    Returns:
-        User's response (in production, this would use LangGraph interrupts)
-    """
-    # In production, this would use LangGraph's interrupt mechanism
-    # For now, we'll return a mock response
-    return f"Mock user response to: {clarification_question}"
+#     Returns:
+#         User's response (in production, this would use LangGraph interrupts)
+#     """
+#     # In production, this would use LangGraph's interrupt mechanism
+#     # For now, we'll return a mock response
+#     return f"Mock user response to: {clarification_question}"
 
 
 # Tool list for easy access
@@ -331,5 +425,5 @@ REACT_TOOLS = [
     targeted_hybrid_search,
     iterative_document_analyzer,
     web_search,
-    wait_for_user_input
+    # wait_for_user_input
 ]
