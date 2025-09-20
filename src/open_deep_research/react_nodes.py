@@ -1,15 +1,14 @@
 """LangGraph nodes for the React Agent workflow."""
 
-import asyncio
 import json
 from typing import Dict, Any, Literal
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+from langchain_core.messages import AIMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 from langchain.chat_models import init_chat_model
 from langgraph.types import Command
 
 from open_deep_research.state import ReactAgentState, ScratchpadEntry, IntermediateResult
-from open_deep_research.react_tools import REACT_TOOLS, targeted_hybrid_search, consult_tender_manifest
+from open_deep_research.react_tools import targeted_hybrid_search, consult_tender_manifest, web_search
 from open_deep_research.prompts import (
     triage_system_prompt,
     orientation_system_prompt, 
@@ -30,17 +29,34 @@ async def triage_node(state: ReactAgentState, config: RunnableConfig) -> Command
     Routes to either fast track (synthesizer) or deep dive (orientation).
     """
     user_query = state["user_query"]
-    tender_id = state["tender_id"]
+    tender_id = state.get("tender_id")
     
     # Add triage step to scratchpad
     step_num = len(state["scratchpad"]) + 1
     scratchpad_entry = ScratchpadEntry(
         step=step_num,
         type="Thought",
-        content=f"Starting triage evaluation for query: {user_query}"
+        content=f"Starting triage evaluation for query: {user_query} (tender_id: {tender_id or 'None - web search mode'})"
     )
     
-    # Perform initial broad search to assess complexity
+    # If no tender_id, route to web search mode (synthesizer with web search)
+    if not tender_id:
+        web_mode_entry = ScratchpadEntry(
+            step=step_num + 1,
+            type="Observation",
+            content="No tender_id provided - routing to web search mode for external research"
+        )
+        
+        return Command(
+            update={
+                "scratchpad": [scratchpad_entry, web_mode_entry],
+                "is_simple_query": True,  # Use fast track for web search
+                "confidence_score": 1.0   # High confidence for web search route
+            },
+            goto="synthesizer"
+        )
+    
+    # Perform initial broad search to assess complexity (only if tender_id available)
     try:
         search_results = await targeted_hybrid_search.ainvoke({
             "query": user_query,
@@ -138,8 +154,24 @@ async def orientation_node(state: ReactAgentState, config: RunnableConfig) -> Co
     """
     Orientation node for situational awareness - gathers tender context and document inventory.
     """
-    tender_id = state["tender_id"]
+    tender_id = state.get("tender_id")
     step_num = len(state["scratchpad"]) + 1
+    
+    # If no tender_id, skip orientation and go straight to planner
+    if not tender_id:
+        skip_entry = ScratchpadEntry(
+            step=step_num,
+            type="Thought",
+            content="No tender_id provided - skipping orientation phase, proceeding to general research planning"
+        )
+        
+        return Command(
+            update={
+                "scratchpad": [skip_entry],
+                "manifest_overview": {}  # Empty manifest for web-only mode
+            },
+            goto="planner"
+        )
     
     # Add orientation step to scratchpad
     orientation_entry = ScratchpadEntry(
@@ -346,7 +378,7 @@ async def tool_executor_node(state: ReactAgentState, config: RunnableConfig) -> 
     """
     step_num = len(state["scratchpad"]) + 1
     current_plan = state.get("current_plan", "")
-    tender_id = state["tender_id"]
+    tender_id = state.get("tender_id")
     
     # Add execution step to scratchpad
     execution_entry = ScratchpadEntry(
@@ -362,7 +394,8 @@ async def tool_executor_node(state: ReactAgentState, config: RunnableConfig) -> 
         # This is a simplified implementation - in production, you'd want more sophisticated plan parsing
         plan_lower = current_plan.lower()
         
-        if "search" in plan_lower or "targeted_hybrid_search" in plan_lower:
+        # Execute targeted search only if tender_id is available
+        if tender_id and ("search" in plan_lower or "targeted_hybrid_search" in plan_lower):
             # Execute targeted search
             search_query = state["user_query"]  # Could be extracted more intelligently from plan
             
@@ -381,7 +414,8 @@ async def tool_executor_node(state: ReactAgentState, config: RunnableConfig) -> 
                 )
                 intermediate_results.append(intermediate_result)
         
-        if "manifest" in plan_lower or "consult_tender_manifest" in plan_lower:
+        # Execute manifest consultation only if tender_id is available
+        if tender_id and ("manifest" in plan_lower or "consult_tender_manifest" in plan_lower):
             # Execute manifest consultation
             manifest_results = await consult_tender_manifest.ainvoke({
                 "action": "list_documents",
@@ -394,6 +428,24 @@ async def tool_executor_node(state: ReactAgentState, config: RunnableConfig) -> 
                     result_data=manifest_results,
                     file_sources=[],
                     web_sources=[]
+                )
+                intermediate_results.append(intermediate_result)
+        
+        # Execute web search when requested or when no tender_id (default for web-only mode)
+        if "web_search" in plan_lower or "external" in plan_lower or not tender_id:
+            # Execute web search - no tender_id required
+            search_query = state["user_query"]  # Could be extracted more intelligently from plan
+            
+            web_results = await web_search.ainvoke({
+                "query": search_query
+            })
+            
+            if web_results:
+                intermediate_result = IntermediateResult(
+                    tool_name="web_search",
+                    result_data=web_results,
+                    file_sources=[],
+                    web_sources=web_results.get("links", [])
                 )
                 intermediate_results.append(intermediate_result)
         
@@ -541,10 +593,17 @@ async def synthesizer_node(state: ReactAgentState, config: RunnableConfig) -> Di
             file_sources.update(result.file_sources)
             web_sources.update(result.web_sources)
         
+        # Build context-aware synthesis prompt
+        tender_context = ""
+        if state.get("tender_id"):
+            tender_context = f"TENDER ID: {state['tender_id']}\nThis analysis is for a specific tender/procurement opportunity.\n\n"
+        else:
+            tender_context = "MODE: General Research (Web Search)\nThis is a general research query using external sources.\n\n"
+        
         synthesis_prompt = f"""
         {synthesizer_system_prompt}
         
-        USER QUERY: {user_query}
+        {tender_context}USER QUERY: {user_query}
         
         GATHERED INFORMATION:
         {json.dumps(result_data, indent=2)}

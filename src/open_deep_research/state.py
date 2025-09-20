@@ -119,7 +119,7 @@ class ReactAgentState(MessagesState):
     """Agent state for the LangGraph react agent with iterative reasoning loop."""
     
     user_query: str = Field(description="The user's original query")
-    tender_id: str = Field(description="Identifier for the current tender being analyzed")
+    tender_id: str | None = Field(default=None, description="Optional identifier for the current tender being analyzed")
     chat_history: Annotated[list[dict], operator.add] = Field(default=[], description="Conversational context")
     
     # Cached situational awareness data
