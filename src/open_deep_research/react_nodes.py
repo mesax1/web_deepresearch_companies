@@ -20,7 +20,7 @@ from open_deep_research.prompts import (
 
 # Initialize configurable model for nodes
 configurable_model = init_chat_model(
-    configurable_fields=("model", "max_tokens", "api_key"),
+   model="gpt-4.1",
 )
 
 

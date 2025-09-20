@@ -12,7 +12,7 @@ from qdrant_client.http.models import Filter, FieldCondition, MatchValue
 from pymongo import MongoClient
 from bson import ObjectId
 
-from tool_utils import getVectorStore, CustomRetriever, get_proposal_id, get_proposal_files, get_proposal_summary, get_proposal_total_documents, get_proposal_compliance_matrix_analysis, get_proposal_files_summary
+from open_deep_research.tool_utils import getVectorStore, CustomRetriever, get_proposal_file_id, get_proposal_files, get_proposal_summary, get_proposal_files_summary, search
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -24,7 +24,7 @@ proposals = db["proposals"]
 proposal_files = db["proposal_files"]
 
 configurable_model = init_chat_model(
-    configurable_fields=("model", "max_tokens", "api_key"),
+    model="gpt-4.1",
 )
 
 class TenderOverview(BaseModel):
@@ -127,6 +127,7 @@ MOCK_DOCUMENT_CONTENT = {
 async def consult_tender_manifest(
     action: str,
     tender_id: str,
+    org_id: int = 1,
     user_references: Optional[List[str]] = None
 ) -> Dict[str, Any]:
     """Consult the tender manifest for rapid access to metadata and summaries.
@@ -134,63 +135,61 @@ async def consult_tender_manifest(
     Args:
         action: Action to perform - 'get_overview', 'list_documents', or 'map_names_to_ids'
         tender_id: Identifier for the tender
+        org_id: Organization ID (defaults to 1)
         user_references: List of user reference strings to map to file IDs (only for map_names_to_ids action)
     
     Returns:
         Dictionary containing the requested information
     """
-    proposal = proposals.find_one({ "_id" : ObjectId(tender_id) })
-    if proposal is None:
-        return {"error": f"Tender {tender_id} not found"}
-
-    summary = ""
-    analysis = proposal['compliance_matrix_analysis']
-    for _, v in analysis.items():
-        summary += f"{v}\n"
-
-    file_id = proposal['requirement_cluster_id']
-    files = proposal_files.find({ "cluster_id" : file_id })
-    total_documents = len(files)
+    try:
+        summary = get_proposal_summary(tender_id, org_id)
+        if isinstance(summary, dict) and "error" in summary:
+            return summary
+        
+        file_id = get_proposal_file_id(tender_id, org_id)
+        if isinstance(file_id, dict) and "error" in file_id:
+            return file_id
+            
+        files = get_proposal_files(file_id, org_id)
+        if isinstance(files, dict) and "error" in files:
+            return files
+            
+        total_documents = len(list(files))
+    except Exception as e:
+        return {"error": f"Error accessing tender {tender_id}: {str(e)}"}
     
     if action == "get_overview":
         return {
-            "tender_id": proposal._id,
+            "tender_id": tender_id,
             "summary": summary,
             "total_documents": total_documents
         }
     
     elif action == "list_documents":
-        return {
-            "documents": [
-                {
-                    "file_id": doc._id,
-                    "file_name": doc.file_name,
-                    "document_type": doc.file_extension,
-                    "summary": doc.requirements_summary["en"] if "en" in doc.requirements_summary else list(doc.requirements_summary.values())[0]
-                }
-                for doc in files
-            ]
-        }
+        try:
+            documents = get_proposal_files_summary(tender_id, org_id)
+            if isinstance(documents, dict) and "error" in documents:
+                return documents
+            return {"documents": documents}
+        except Exception as e:
+            return {"error": f"Error getting document list: {str(e)}"}
     
     elif action == "map_names_to_ids":
         if not user_references:
             return {"error": "No user references provided for mapping"}
         
-        document_info = []
-        for doc in files:
-            doc_summary = doc.requirements_summary.get("en", list(doc.requirements_summary.values())[0] if doc.requirements_summary else "")
-            document_info.append({
-                "file_id": str(doc._id),
-                "file_name": doc.file_name,
-                "file_extension": doc.file_extension,
-                "summary": doc_summary
-            })
+        try:
+            document_info = get_proposal_files_summary(tender_id, org_id)
+            if isinstance(document_info, dict) and "error" in document_info:
+                return document_info
+        except Exception as e:
+            return {"error": f"Error getting document info for mapping: {str(e)}"}
 
         prompt = f"""
 You are tasked with mapping user reference strings to the most appropriate file IDs from a tender document collection.
 User References to Map: {', '.join(user_references)}
 Available Documents:
-{chr(10).join([f"- ID: {doc['file_id']}, Name: {doc['file_name']}, Type: {doc['file_extension']}, Summary: {doc['summary']}" for doc in document_info])}
+{chr(10).join([f"- ID: {doc['file_id']}, Name: {doc['file_name']}, Type: {doc['document_type']}, Summary: {doc['summary']}" for doc in document_info])}
 For each user reference, find the best matching document and provide:
 1. The exact file_id from the available documents
 2. A confidence score between 0.0 and 1.0 (1.0 = perfect match, 0.0 = no match)
@@ -238,15 +237,14 @@ Return your response in the following JSON format:
                 best_match = None
                 best_confidence = 0.0
                 
-                for doc in files:
+                for doc in document_info:
                     confidence = 0.0
-                    doc_summary = doc.requirements_summary.get("en", list(doc.requirements_summary.values())[0] if doc.requirements_summary else "")
                     
-                    if ref_lower in doc.file_name.lower():
+                    if ref_lower in doc['file_name'].lower():
                         confidence += 0.6
-                    if ref_lower in doc.file_extension.lower():
+                    if ref_lower in doc['document_type'].lower():
                         confidence += 0.4
-                    if any(word in doc_summary.lower() for word in ref_lower.split()):
+                    if any(word in doc['summary'].lower() for word in ref_lower.split()):
                         confidence += 0.3
                     
                     if confidence > best_confidence:
@@ -256,8 +254,8 @@ Return your response in the following JSON format:
                 if best_match and best_confidence > 0.1:
                     mapped_results.append({
                         "user_reference": ref,
-                        "file_id": str(best_match._id),
-                        "file_name": best_match.file_name,
+                        "file_id": str(best_match['file_id']),
+                        "file_name": best_match['file_name'],
                         "confidence": min(best_confidence, 1.0),
                         "reasoning": f"Fallback matching based on filename/content similarity (confidence: {best_confidence:.2f})"
                     })
@@ -271,6 +269,7 @@ Return your response in the following JSON format:
 async def targeted_hybrid_search(
     query: str,
     tender_id: str,
+    org_id: int = 1,
     file_id_filters: Optional[List[str]] = None
 ) -> List[Dict[str, Any]]:
     """Primary RAG workhorse for deep content extraction using hybrid search.
@@ -278,14 +277,16 @@ async def targeted_hybrid_search(
     Args:
         query: Search query string
         tender_id: Identifier for the tender
+        org_id: Organization ID (defaults to 1)
         file_id_filters: Optional list of file IDs to restrict search scope
     
     Returns:
         List of relevant search results with content and metadata
     """
     try:
-        proposal = proposals.find_one({ "_id" : ObjectId(tender_id) })
-        file_id = proposal['requirement_cluster_id']
+        file_id = get_proposal_file_id(tender_id, org_id)
+        if isinstance(file_id, dict) and "error" in file_id:
+            return file_id
         current_filter = Filter(
             must=[
                 FieldCondition(
@@ -320,7 +321,8 @@ async def targeted_hybrid_search(
 async def iterative_document_analyzer(
     file_id: str,
     analysis_objective: str,
-    tender_id: str
+    tender_id: str,
+    org_id: int = 1
 ) -> Dict[str, Any]:
     """Analyze or summarize large documents using MapReduce strategy.
     
@@ -328,6 +330,7 @@ async def iterative_document_analyzer(
         file_id: Identifier for the specific document to analyze
         analysis_objective: The analysis goal (e.g., "Extract all penalty clauses")
         tender_id: Identifier for the tender
+        org_id: Organization ID (defaults to 1)
     
     Returns:
         Dictionary containing analysis results
@@ -375,32 +378,34 @@ async def iterative_document_analyzer(
 
 
 @tool
-async def web_search(query: str) -> List[Dict[str, Any]]:
+async def web_search(query: str) -> Dict[str, Any]:
     """Search external sources for regulations, legal definitions, and market intelligence.
     
     Args:
         query: Search query for external information
     
     Returns:
-        List of web search results with content and sources
+        Dictionary with search results and metadata
     """
-    # Mock implementation - in production this would use Tavily API or similar
-    mock_results = [
-        {
-            "title": f"Search Results for: {query}",
-            "content": f"External information related to {query}. This would include relevant regulations, legal definitions, and market intelligence.",
-            "url": "https://example.com/search-result-1",
-            "source": "External Database"
-        },
-        {
-            "title": f"Regulatory Information: {query}",
-            "content": f"Regulatory context and legal framework information for {query}.",
-            "url": "https://example.com/search-result-2", 
-            "source": "Legal Database"
+    try:
+        # Use the search function from tool_utils
+        context, links = search({"orig_input": query})
+        
+        return {
+            "context": context,
+            "links": links,
+            "query": query,
+            "success": True
         }
-    ]
-    
-    return mock_results
+    except Exception as e:
+        # Fallback to mock results if search fails
+        return {
+            "context": f"Mock search results for: {query}. External information related to {query}. This would include relevant regulations, legal definitions, and market intelligence.",
+            "links": ["https://example.com/search-result-1", "https://example.com/search-result-2"],
+            "query": query,
+            "success": False,
+            "error": str(e)
+        }
 
 
 # @tool

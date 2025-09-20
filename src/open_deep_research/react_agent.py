@@ -2,8 +2,8 @@
 
 from typing import Literal
 from langchain.chat_models import init_chat_model
-from langraph.graph import StateGraph, START, END
-from langraph.types import Command
+from langgraph.graph import StateGraph, START, END
+from langgraph.types import Command
 
 from open_deep_research.state import ReactAgentState
 from open_deep_research.react_nodes import (
