@@ -1,8 +1,10 @@
 import hashlib  # noqa: D100
+import logging
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
+from bson import ObjectId  # pyright: ignore[reportMissingImports]
 from langchain.prompts import PromptTemplate
 from langchain_cohere import CohereRerank  # pyright: ignore[reportMissingImports]
 from langchain_community.docstore.document import Document
@@ -17,7 +19,8 @@ from langchain_qdrant import (  # pyright: ignore[reportMissingImports]
 from openai import OpenAI
 from pydantic import Field, SecretStr
 from pymongo import MongoClient
-from bson import ObjectId  # pyright: ignore[reportMissingImports]
+
+logging.basicConfig(level=logging.INFO)
 
 compressor = CohereRerank(model="rerank-multilingual-v3.0")
 JOB_TIMEOUT = 60 * 30  # 30 minutes
@@ -25,9 +28,6 @@ JOB_TIMEOUT = 60 * 30  # 30 minutes
 TASK_STATUS_PENDING = "pending"
 TASK_STATUS_ERROR = "error"
 TASK_STATUS_COMPLETED = "completed"
-
-uri = os.getenv("MONGODB_URI")
-mongo_client = MongoClient(uri)
 
 class CustomRetriever(BaseRetriever):
     """A custom retriever that combines multiple retrievers and implements reranking."""
@@ -58,14 +58,14 @@ class CustomRetriever(BaseRetriever):
         Returns:
             List of embeddings
         """
-        print(f"Fetching embeddings for {len(texts)} texts...")
+        logging.info(f"Fetching embeddings for {len(texts)} texts...")
         try:
             client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
             response = client.embeddings.create(input=texts, model="text-embedding-3-small")
             embeddings = [data.embedding for data in response.data]
             return embeddings
         except Exception as e:
-            print(f"Error getting embeddings: {e}")
+            logging.error(f"Error getting embeddings: {e}")
             raise
 
     def _rerank_documents(self, query: str, documents: List[Document]) -> List[Document]:
@@ -79,14 +79,14 @@ class CustomRetriever(BaseRetriever):
             Reranked list of documents
         """
         if not documents:
-            print("No documents to rerank")
+            logging.info("No documents to rerank")
             return []
 
         try:
             rerank_results = compressor.rerank(documents, query, top_n=self.p)
         except Exception as e:
-            print(f"Error during reranking: {e}")
-            print("Falling back to first p documents")
+            logging.error(f"Error during reranking: {e}")
+            logging.info("Falling back to first p documents")
             return documents[: self.p]
 
         sorted_documents = []
@@ -95,7 +95,7 @@ class CustomRetriever(BaseRetriever):
             score = rerank["relevance_score"]
 
             if idx < 0 or idx >= len(documents):
-                print(f"Index {idx} is out of bounds for documents list")
+                logging.error(f"Index {idx} is out of bounds for documents list")
                 continue
 
             doc = documents[idx]
@@ -113,7 +113,7 @@ class CustomRetriever(BaseRetriever):
         Returns:
             List of unique documents
         """
-        print(f"Removing duplicates from {len(documents)} documents")
+        logging.info(f"Removing duplicates from {len(documents)} documents")
 
         seen_identifiers = set()
         unique_documents = []
@@ -126,36 +126,36 @@ class CustomRetriever(BaseRetriever):
                 seen_identifiers.add(identifier)
                 unique_documents.append(doc)
 
-        print(f"Found {len(unique_documents)} unique documents")
+        logging.info(f"Found {len(unique_documents)} unique documents")
         return unique_documents
 
     def _get_relevant_documents(self, query: str, *, run_manager: CallbackManagerForRetrieverRun) -> List[Document]:
         """Get relevant documents for a query using multiple retrievers."""
-        print(f"Query: {query}...")
+        logging.info(f"Query: {query}...")
         documents = []
         for i, retriever in enumerate(self.retrievers):
             try:
-                print(f"Getting documents from retriever {i+1}")
+                logging.info(f"Getting documents from retriever {i+1}")
                 docs = retriever.invoke(query, config={"callbacks": run_manager.get_child(f"retriever_{i + 1}")})
                 documents.extend(docs)
-                print(f"Retrieved {len(docs)} documents from retriever {i+1}")
+                logging.info(f"Retrieved {len(docs)} documents from retriever {i+1}")
             except Exception as e:
-                print(f"Error with retriever {i+1}: {e}")
+                logging.error(f"Error with retriever {i+1}: {e}")
                 continue
 
-        print(f"Retrieved total of {len(documents)} documents before deduplication")
+        logging.info(f"Retrieved total of {len(documents)} documents before deduplication")
         for i, doc in enumerate(documents):
-            print(f"Document {i+1}: {doc.page_content[:100]}...")
+            logging.info(f"Document {i+1}: {doc.page_content[:100]}...")
 
         documents = self.remove_duplicates(documents)
-        print(f"Have {len(documents)} documents after deduplication")
+        logging.info(f"Have {len(documents)} documents after deduplication")
 
         if documents:
             reranked_documents = self._rerank_documents(query, documents)
-            print(f"Reranked to {len(reranked_documents)} documents")
+            logging.info(f"Reranked to {len(reranked_documents)} documents")
             return reranked_documents
 
-        print("No documents found")
+        logging.info("No documents found")
         return []
 
     async def _aget_relevant_documents(
@@ -186,7 +186,7 @@ class CustomRetriever(BaseRetriever):
         Returns:
             List[Document]: List of relevant, possibly reranked documents.
         """  # noqa: D205
-        print(f"Starting simple retrieval for query: {query} where k={self.k} and p={self.p}")
+        logging.info(f"Starting simple retrieval for query: {query} where k={self.k} and p={self.p}")
         documents: List[Document] = []
 
         try:
@@ -196,7 +196,7 @@ class CustomRetriever(BaseRetriever):
 
             for i, retriever in enumerate(self.retrievers):
                 try:
-                    print(
+                    logging.info(
                         f"Using sub-retriever {i+1}/{len(self.retrievers)} to get docs "
                         f"with k={final_search_kwargs.get('k', self.k)}"
                     )
@@ -214,7 +214,7 @@ class CustomRetriever(BaseRetriever):
 
                     docs = retriever.invoke(query)
                     documents.extend(docs)
-                    print(f"Sub-retriever {i+1} returned {len(docs)} docs.")
+                    logging.info(f"Sub-retriever {i+1} returned {len(docs)} docs.")
 
                     if hasattr(retriever, "search_kwargs"):
                         setattr(retriever, "search_kwargs", original_kwargs)
@@ -222,23 +222,23 @@ class CustomRetriever(BaseRetriever):
                 except Exception as e:
                     continue
 
-            print(f"Total docs from all sub-retrievers (before dedup): {len(documents)}")
+            logging.info(f"Total docs from all sub-retrievers (before dedup): {len(documents)}")
 
             documents = self.remove_duplicates(documents)
-            print(f"Documents after deduplication: {len(documents)}")
+            logging.info(f"Documents after deduplication: {len(documents)}")
 
             if documents:
                 reranked_documents = self._rerank_documents(query, documents)
-                print(f"Returning top {min(len(reranked_documents), self.p)} reranked documents.")
+                logging.info(f"Returning top {min(len(reranked_documents), self.p)} reranked documents.")
                 return reranked_documents[: self.p]
 
-            print("No documents found. Returning empty list.")
+            logging.info("No documents found. Returning empty list.")
             return []
 
-        except Exception as exc:
+        except Exception:
             return []
 
-def getVectorStore(collection_name):
+def getVectorStore(collection_name):  # noqa: D103
     sparse_embedding_model = FastEmbedSparse(model_name="Qdrant/bm25")
     dense_embedding_model = OpenAIEmbeddings(
         api_key=SecretStr(os.environ["OPENAI_API_KEY"]), model="text-embedding-3-small"
@@ -256,7 +256,7 @@ def getVectorStore(collection_name):
     )
     return vectorstore
 
-def make_query(query: str) -> str:
+def make_query(query: str) -> str:  # noqa: D103
     prompt = PromptTemplate(
         template="""
             You are an expert in query optimization. Your task is to **rewrite** a long query to fit within **50 words**, while keeping all essential details intact.
@@ -280,7 +280,6 @@ def make_query(query: str) -> str:
     chain = prompt | llm
 
     response = chain.invoke({"query": query})
-    print(response.content)
     return response.content
 
 def search(inputs: str) -> Tuple[str, List[str]]:  # noqa: D103
@@ -309,54 +308,73 @@ def search(inputs: str) -> Tuple[str, List[str]]:  # noqa: D103
     tavily_links = [result["url"] for result in results if "url" in result and result["url"]]
     return context, tavily_links
 
-def get_proposal_file_id(tender_id: str, org_id: int) -> str:
+def get_requirement_cluster_id(client: MongoClient, tender_id: str, org_id: int = 1) -> Optional[str]:
+    """Get the requirement cluster id for a given tender id."""
     try:
-        db = mongo_client[f"org_{org_id}"]
+        db = client[f"org_{org_id}"]
         proposals = db["proposals"]
         proposal = proposals.find_one({ "_id" : ObjectId(tender_id) })
-        return proposal["requirement_cluster_id"]
+        if proposal:
+            return proposal.get("requirement_cluster_id")
+        return None
     except Exception as e:
-        return {"error": f"Error getting proposal id: {e}"}
+        logging.error(f"Error getting requirement cluster id: {e}")
+        return None
 
-def get_proposal_files(tender_id: str, org_id: int) -> List[Dict[str, Any]]:
+def get_proposal_files(client: MongoClient, requirement_cluster_id: str, org_id: int = 1) -> Optional[List[Dict[str, Any]]]:
+    """Get the proposal files from a given requirement cluster id."""
     try:
-        db = mongo_client[f"org_{org_id}"]
+        db = client[f"org_{org_id}"]
         proposal_files = db["proposal_files"]
-        files = proposal_files.find({ "cluster_id" : tender_id })
-        return files
+        files = proposal_files.find({ "cluster_id" : requirement_cluster_id })
+        if files:
+            return list(files)
+        return None
     except Exception as e:
-        return {"error": f"Error getting proposal files: {e}"}
+        logging.error(f"Error getting proposal files: {e}")
+        return None
 
-def get_proposal_summary(tender_id: str, org_id: int) -> str:
+def get_proposal_summary(client: MongoClient, tender_id: str, org_id: int = 1) -> Optional[str]:
+    """Get the proposal summary for a given tender id."""
     try:
-        db = mongo_client[f"org_{org_id}"]
+        db = client[f"org_{org_id}"]
         proposals = db["proposals"]
         proposal = proposals.find_one({ "_id" : ObjectId(tender_id) })
         compliance_matrix_analysis = proposal["compliance_matrix_analysis"]
+        if compliance_matrix_analysis is None:
+            return None
         summary = ""
         for _, v in compliance_matrix_analysis.items():
             summary += f"{v}\n"
         return summary
     except Exception as e:
-        return {"error": f"Error getting proposal summary: {e}"}
+        logging.error(f"Error getting proposal summary: {e}")
+        return None
 
-def get_proposal_files_summary(tender_id: str, org_id: int) -> Dict[str, Any]:
+def get_proposal_files_summary(client: MongoClient, tender_id: str, org_id: int = 1) -> Optional[List[Dict[str, Any]]]:
+    """Get the proposal files summary for a given tender id."""
     try:
-        db = mongo_client[f"org_{org_id}"]
+        db = client[f"org_{org_id}"]
         proposal_files = db["proposal_files"]
         proposals = db["proposals"]
         proposal = proposals.find_one({ "_id" : ObjectId(tender_id) })
+        if proposal is None:
+            return None
         file_id = proposal["requirement_cluster_id"]
+        if file_id is None:
+            return None
         files = proposal_files.find({ "cluster_id" : file_id })
+        if files is None:
+            return None
         return [
             {
-                "file_id": doc._id,
-                "file_name": doc.file_name,
-                "document_type": doc.file_extension,
-                "summary": doc.requirements_summary["en"] if "en" in doc.requirements_summary else list(doc.requirements_summary.values())[0]
+                "file_id": doc.get("_id"),
+                "file_name": doc.get("file_name"),
+                "document_type": doc.get("file_extension"),
+                "summary": doc.get("requirements_summary", {}).get("en") if doc.get("requirements_summary", {}).get("en") else list(doc.get("requirements_summary", {}).values())[0]
             }
             for doc in files
         ]
     except Exception as e:
-        return {"error": f"Error getting proposal files summary: {e}"}
-
+        logging.error(f"Error getting proposal files summary: {e}")
+        return None

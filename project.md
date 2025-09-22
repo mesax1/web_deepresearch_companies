@@ -1,0 +1,303 @@
+# Open Deep Research Repository Overview
+
+## Project Description
+Open Deep Research is a specialized, configurable, fully open-source research platform that provides two distinct research agents optimized for different use cases:
+
+1. **Deep Researcher (Company Due Diligence)**: A comprehensive company research agent designed for bid management and business intelligence, featuring systematic data collection across company foundation documents, financial standing, and products/services portfolio.
+
+2. **Tender Research Agent**: A LangGraph React Agent optimized for tender document analysis and research, implementing an iterative Plan → Execute → Reflect reasoning loop with optimization triage for efficient query processing.
+
+Both agents work across multiple model providers, search tools, and MCP (Model Context Protocol) servers, enabling automated research with parallel processing and comprehensive report generation.
+
+## Repository Structure
+
+### Root Directory
+- `README.md` - Comprehensive project documentation with quickstart guide
+- `pyproject.toml` - Python project configuration and dependencies
+- `langgraph.json` - LangGraph configuration defining the main graph entry point
+- `uv.lock` - UV package manager lock file
+- `LICENSE` - MIT license
+- `.env.example` - Environment variables template (not tracked)
+
+### Core Implementation (`src/open_deep_research/`)
+- `deep_researcher.py` - Main LangGraph implementation for company research (entry point: `deep_researcher`)
+- `react_agent.py` - LangGraph React Agent implementation for tender research (entry point: `react_agent`)
+- `react_nodes.py` - Node implementations for the React Agent workflow
+- `react_tools.py` - Foundational tools for tender research and analysis
+- `configuration.py` - Configuration management and settings
+- `state.py` - Graph state definitions and data structures for both agents
+- `prompts.py` - System prompts and prompt templates for both research types
+- `tool_utils.py` - Utility functions and helpers for search and retrieval
+- `utils.py` - General utility functions and helpers
+
+### Legacy Implementations (`src/legacy/`)
+Contains two earlier research implementations:
+- `graph.py` - Plan-and-execute workflow with human-in-the-loop
+- `multi_agent.py` - Supervisor-researcher multi-agent architecture
+- `legacy.md` - Documentation for legacy implementations
+- `CLAUDE.md` - Legacy-specific Claude instructions
+- `tests/` - Legacy-specific tests
+
+### Security (`src/security/`)
+- `auth.py` - Authentication handler for LangGraph deployment
+
+### Testing (`tests/`)
+- `run_evaluate.py` - Main evaluation script configured to run on deep research bench
+- `evaluators.py` - Specialized evaluation functions  
+- `prompts.py` - Evaluation prompts and criteria
+- `pairwise_evaluation.py` - Comparative evaluation tools
+- `supervisor_parallel_evaluation.py` - Multi-threaded evaluation
+
+### Examples (`examples/`)
+- `arxiv.md` - ArXiv research example
+- `pubmed.md` - PubMed research example
+- `inference-market.md` - Inference market analysis examples
+- `inference-market-gpt45.md` - GPT-4.5 inference market analysis
+
+### Documentation
+- `react_agent.md` - Comprehensive guide to the LangGraph React Agent implementation
+- `langgraph_rules.md` - LangGraph-specific development rules and guidelines
+
+## Key Technologies
+- **LangGraph** - Workflow orchestration and graph execution for both agents
+- **LangChain** - LLM integration and tool calling
+- **React Agent Pattern** - Iterative reasoning loop with Plan → Execute → Reflect workflow
+- **Multiple LLM Providers** - OpenAI, Anthropic, Google, Groq, DeepSeek support
+- **Search APIs** - Tavily, OpenAI/Anthropic native search, DuckDuckGo, Exa
+- **Vector Databases** - Qdrant with hybrid search (dense + sparse embeddings)
+- **MCP Servers** - Model Context Protocol for extended capabilities
+- **MongoDB** - Document storage and tender manifest management
+- **Cohere Rerank** - Advanced document reranking for improved relevance
+
+## Agent Capabilities
+
+### 1. Deep Researcher (Company Due Diligence)
+**Purpose**: Comprehensive company research for bid management and business intelligence.
+
+**Key Features**:
+- **Systematic Discovery Phase**: Website mapping, company identifier collection, and initial profiling
+- **Structured Data Collection**: Parallel processing across three critical areas:
+  - Company Foundation Documents (legal structure, history, organization)
+  - Financial & Legal Standing (annual reports, credit ratings, compliance)
+  - Products/Services Portfolio (capabilities, case studies, references)
+- **Professional Intelligence Focus**: Optimized for business decision-making and tender preparation
+
+**Input Format**:
+```json
+{
+  "company_info": {
+    "company_name": "Example Company A/S",
+    "cvr_number": "12345678",
+    "country": "Denmark",
+    "primary_industry": "Technology Services"
+  }
+}
+```
+
+### 2. Tender Research Agent (React Agent)
+**Purpose**: Specialized tender document analysis and research with iterative reasoning.
+
+**Architecture**:
+```
+User Query → Triage Node → [Fast Track OR Deep Dive]
+                ↓
+            Orientation Node (Deep Dive only)
+                ↓
+            Planner Node ← ← ← ← ←
+                ↓                ↑
+            Tool Executor      ↑
+                ↓                ↑
+            Reflection Node → → ↑
+                ↓
+            Synthesizer Node → Final Answer
+```
+
+**Key Features**:
+- **Fast Track Optimization**: Simple queries bypass full reasoning loop for reduced latency
+- **Reasoning Transparency**: Complete scratchpad shows agent's step-by-step thinking
+- **Iterative Improvement**: Reflection node evaluates tool effectiveness and modifies approach
+- **Comprehensive Citations**: All answers include clear source references
+
+**Foundational Tools (5 Tools)**:
+1. **Consult_Tender_Manifest** - Rapid metadata access and document mapping
+2. **Targeted_Hybrid_Search** - Primary RAG with parent-child retrieval
+3. **Iterative_Document_Analyzer** - MapReduce strategy for large documents
+4. **Web_Search** - External regulations and market intelligence
+5. **Wait_for_User_Input** - Collaborative ambiguity resolution
+
+**Input Format**:
+```json
+{
+  "user_query": "What are the penalty clauses in the IT infrastructure tender?",
+  "tender_id": "tender_123",
+  "messages": [
+    {
+      "role": "human",
+      "content": "What are the penalty clauses in the IT infrastructure tender?"
+    }
+  ]
+}
+```
+
+## Development Commands
+- `uvx langgraph dev` - Start development server with LangGraph Studio
+- `python tests/run_evaluate.py` - Run comprehensive evaluations
+- `ruff check` - Code linting
+- `mypy` - Type checking
+
+## Configuration
+All settings configurable via:
+- Environment variables (`.env` file)
+- Web UI in LangGraph Studio
+- Direct configuration modification
+
+Key settings include model selection, search API choice, concurrency limits, MCP server configurations, and agent-specific parameters (max iterations, confidence thresholds, etc.).
+
+## State Management & Data Structures
+
+### Deep Researcher State
+The company research agent uses multiple state schemas:
+
+- **AgentInputState**: Contains structured company information for research
+- **AgentState**: Main agent state with messages, research brief, and final report
+- **SupervisorState**: Manages research tasks and iterations
+- **ResearcherState**: Individual researcher state for parallel processing
+
+### React Agent State
+The tender research agent uses a comprehensive state schema:
+
+- **ReactAgentState**: Main state containing:
+  - `user_query`: Original user query
+  - `tender_id`: Optional tender identifier
+  - `scratchpad`: List of reasoning steps (Thought, Action, Observation)
+  - `intermediate_results`: Structured data from tool executions
+  - `iterations`: Loop control and limits
+  - `is_simple_query`: Fast track optimization flag
+  - `confidence_score`: Query complexity assessment
+
+### Supporting Data Structures
+- **ScratchpadEntry**: Individual reasoning step with step number, type, and content
+- **IntermediateResult**: Tool execution results with sources and metadata
+- **CompanyInfo**: Structured company information for research
+- **TenderOverview**: Tender metadata and document count
+- **DocumentInventoryItem**: Document metadata and summaries
+
+## Technical Architecture
+
+### LangGraph Configuration
+The system supports two main agents via `langgraph.json`:
+```json
+{
+  "graphs": {
+    "Deep Researcher": "./src/open_deep_research/deep_researcher.py:deep_researcher",
+    "Tender Research Agent": "./src/open_deep_research/react_agent.py:react_agent"
+  }
+}
+```
+
+### React Agent Workflow
+The tender research agent implements a sophisticated workflow:
+1. **Triage Node**: Evaluates query complexity and routes to fast track or deep dive
+2. **Orientation Node**: Gathers tender context and document inventory
+3. **Planner Node**: Central reasoning engine using ReAct prompting
+4. **Tool Executor Node**: Executes planned tools with parallel support
+5. **Reflection Node**: Evaluates tool effectiveness and determines next steps
+6. **Synthesizer Node**: Generates final comprehensive answer with citations
+
+### Search & Retrieval
+- **Hybrid Search**: Combines dense embeddings (OpenAI) with sparse embeddings (BM25)
+- **Reranking**: Cohere rerank model for improved relevance
+- **Vector Database**: Qdrant with parent-child chunking strategy
+- **Document Storage**: MongoDB for tender manifests and metadata
+
+## Usage Examples
+
+### Company Research (Deep Researcher)
+```python
+from open_deep_research.deep_researcher import deep_researcher
+
+# Define company information
+input_state = {
+    "company_info": {
+        "company_name": "Example Company A/S",
+        "cvr_number": "12345678",
+        "country": "Denmark",
+        "primary_industry": "Technology Services"
+    }
+}
+
+# Run comprehensive company research
+result = deep_researcher.invoke(input_state)
+print(result["final_report"])
+```
+
+### Tender Research (React Agent)
+```python
+from open_deep_research.react_agent import react_agent
+
+# Define tender research query
+input_state = {
+    "user_query": "What are the penalty clauses in the IT infrastructure tender?",
+    "tender_id": "tender_123",
+    "messages": [{"role": "human", "content": "What are the penalty clauses?"}]
+}
+
+# Run tender analysis
+result = react_agent.invoke(input_state)
+print(result["messages"][-1].content)
+
+# Stream the reasoning process
+for event in react_agent.stream(input_state):
+    if "scratchpad" in event:
+        for entry in event["scratchpad"]:
+            print(f"Step {entry.step} ({entry.type}): {entry.content}")
+```
+
+### Configuration Examples
+```python
+# Company research configuration
+config = {
+    "configurable": {
+        "model": "anthropic:claude-3-5-sonnet-20241022",
+        "max_tokens": 4000,
+        "max_concurrent_research_units": 5,
+        "max_researcher_iterations": 3
+    }
+}
+
+# Tender research configuration
+config = {
+    "configurable": {
+        "model": "openai:gpt-4.1",
+        "max_tokens": 4000,
+        "max_iterations": 10
+    }
+}
+```
+
+## Dependencies & Requirements
+
+### Core Dependencies
+- **Python**: >=3.10
+- **LangGraph**: >=0.5.4
+- **LangChain**: Community, OpenAI, Anthropic, Google, Groq, DeepSeek support
+- **Vector Database**: Qdrant with hybrid search capabilities
+- **Document Storage**: MongoDB for tender manifests
+- **Search APIs**: Tavily, DuckDuckGo, Exa
+- **Reranking**: Cohere rerank model
+
+### Environment Variables
+```bash
+# Required API Keys
+OPENAI_API_KEY=your_openai_key
+ANTHROPIC_API_KEY=your_anthropic_key
+TAVILY_API_KEY=your_tavily_key
+QDRANT_HOST=your_qdrant_host
+QDRANT_API_KEY=your_qdrant_key
+MONGODB_URL=your_mongodb_connection
+
+# Optional Configuration
+COHERE_API_KEY=your_cohere_key  # For reranking
+GOOGLE_API_KEY=your_google_key  # For Google models
+GROQ_API_KEY=your_groq_key      # For Groq models
+```
