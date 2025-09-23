@@ -1,45 +1,47 @@
 """LangGraph nodes for the React Agent workflow."""
 
-import json
-from typing import Dict, Any, Literal
+from typing import Any, Dict, Literal
+
+from bson import json_util
+from langchain.chat_models import init_chat_model
 from langchain_core.messages import AIMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
-from langchain.chat_models import init_chat_model
 from langgraph.types import Command
 
-from open_deep_research.state import ReactAgentState, ScratchpadEntry, IntermediateResult
-from open_deep_research.react_tools import targeted_hybrid_search, consult_tender_manifest, web_search
 from open_deep_research.prompts import (
-    triage_system_prompt,
-    orientation_system_prompt, 
+    orientation_system_prompt,
     planner_system_prompt,
     reflection_system_prompt,
-    synthesizer_system_prompt
+    synthesizer_system_prompt,
+    triage_system_prompt,
+)
+from open_deep_research.react_tools import (
+    consult_tender_manifest,
+    targeted_hybrid_search,
+    web_search,
+)
+from open_deep_research.state import (
+    IntermediateResult,
+    ReactAgentState,
+    ScratchpadEntry,
 )
 
-# Initialize configurable model for nodes
 configurable_model = init_chat_model(
    model="gpt-4.1",
 )
 
-
 async def triage_node(state: ReactAgentState, config: RunnableConfig) -> Command[Literal["orientation", "synthesizer"]]:
-    """
-    Triage node for optimization fast track - determines if query is simple enough for direct processing.
-    Routes to either fast track (synthesizer) or deep dive (orientation).
-    """
+    """Triage node for optimization fast track - determines if query is simple enough for direct processing. Routes to either fast track (synthesizer) or deep dive (orientation)."""
     user_query = state["user_query"]
     tender_id = state.get("tender_id")
     
-    # Add triage step to scratchpad
     step_num = len(state["scratchpad"]) + 1
     scratchpad_entry = ScratchpadEntry(
         step=step_num,
         type="Thought",
         content=f"Starting triage evaluation for query: {user_query} (tender_id: {tender_id or 'None - web search mode'})"
     )
-    
-    # If no tender_id, route to web search mode (synthesizer with web search)
+
     if not tender_id:
         web_mode_entry = ScratchpadEntry(
             step=step_num + 1,
@@ -50,28 +52,25 @@ async def triage_node(state: ReactAgentState, config: RunnableConfig) -> Command
         return Command(
             update={
                 "scratchpad": [scratchpad_entry, web_mode_entry],
-                "is_simple_query": True,  # Use fast track for web search
-                "confidence_score": 1.0   # High confidence for web search route
+                "is_simple_query": True,
+                "confidence_score": 1.0
             },
-            goto="synthesizer"
+            goto="orientation"
         )
     
-    # Perform initial broad search to assess complexity (only if tender_id available)
     try:
         search_results = await targeted_hybrid_search.ainvoke({
             "query": user_query,
             "tender_id": tender_id,
             "file_id_filters": None
         })
-        
-        # Calculate average confidence score
+
         if search_results and isinstance(search_results, list):
             confidence_scores = [r.get("confidence_score", 0.0) for r in search_results if isinstance(r, dict)]
             avg_confidence = sum(confidence_scores) / len(confidence_scores) if confidence_scores else 0.0
         else:
             avg_confidence = 0.0
         
-        # Use LLM to evaluate query complexity and confidence
         evaluation_prompt = f"""
         {triage_system_prompt}
         
@@ -88,15 +87,12 @@ async def triage_node(state: ReactAgentState, config: RunnableConfig) -> Command
             SystemMessage(content=evaluation_prompt)
         ])
         
-        # Parse response to determine routing
         response_content = response.content.lower()
         
-        # Simple heuristics for routing decision
         is_simple = any(word in response_content for word in ["simple", "direct", "straightforward", "basic"])
         high_confidence = "high" in response_content and ("confidence" in response_content or "certain" in response_content)
         fast_track_mentioned = "fast_track" in response_content or "fast track" in response_content
         
-        # Routing logic
         if (is_simple and high_confidence and avg_confidence > 0.5) or fast_track_mentioned:
             route = "synthesizer"
             decision = "FAST_TRACK"
@@ -104,7 +100,6 @@ async def triage_node(state: ReactAgentState, config: RunnableConfig) -> Command
             route = "orientation"
             decision = "DEEP_DIVE"
         
-        # Update scratchpad with decision
         decision_entry = ScratchpadEntry(
             step=step_num + 1,
             type="Observation",
@@ -117,7 +112,6 @@ async def triage_node(state: ReactAgentState, config: RunnableConfig) -> Command
             "confidence_score": avg_confidence
         }
         
-        # Store initial search results for fast track
         if route == "synthesizer" and search_results:
             intermediate_result = IntermediateResult(
                 tool_name="initial_search",
@@ -133,7 +127,6 @@ async def triage_node(state: ReactAgentState, config: RunnableConfig) -> Command
         )
         
     except Exception as e:
-        # If triage fails, default to deep dive
         error_entry = ScratchpadEntry(
             step=step_num + 1,
             type="Observation", 
@@ -149,15 +142,11 @@ async def triage_node(state: ReactAgentState, config: RunnableConfig) -> Command
             goto="orientation"
         )
 
-
 async def orientation_node(state: ReactAgentState, config: RunnableConfig) -> Command[Literal["planner"]]:
-    """
-    Orientation node for situational awareness - gathers tender context and document inventory.
-    """
+    """Orientation node for situational awareness - gathers tender context and document inventory."""
     tender_id = state.get("tender_id")
     step_num = len(state["scratchpad"]) + 1
-    
-    # If no tender_id, skip orientation and go straight to planner
+
     if not tender_id:
         skip_entry = ScratchpadEntry(
             step=step_num,
@@ -168,12 +157,11 @@ async def orientation_node(state: ReactAgentState, config: RunnableConfig) -> Co
         return Command(
             update={
                 "scratchpad": [skip_entry],
-                "manifest_overview": {}  # Empty manifest for web-only mode
+                "manifest_overview": {}
             },
             goto="planner"
         )
     
-    # Add orientation step to scratchpad
     orientation_entry = ScratchpadEntry(
         step=step_num,
         type="Thought",
@@ -181,34 +169,40 @@ async def orientation_node(state: ReactAgentState, config: RunnableConfig) -> Co
     )
     
     try:
-        # Get tender overview
         overview_result = await consult_tender_manifest.ainvoke({
             "action": "get_overview",
             "tender_id": tender_id
         })
         
-        # Get document inventory
         documents_result = await consult_tender_manifest.ainvoke({
             "action": "list_documents", 
             "tender_id": tender_id
         })
-        
-        # Combine manifest information
+
         manifest_overview = {
             "overview": overview_result,
             "documents": documents_result.get("documents", []),
             "total_documents": overview_result.get("total_documents", 0)
         }
-        
-        # Use LLM to analyze tender structure
+
+        orientation_intermediate_result = IntermediateResult(
+            tool_name="consult_tender_manifest",
+            result_data={
+                "overview": overview_result,
+                "documents": documents_result
+            },
+            file_sources=[doc.get("file_name", "") for doc in documents_result.get("documents", []) if doc],
+            web_sources=[]
+        )
+
         analysis_prompt = f"""
         {orientation_system_prompt}
         
         TENDER OVERVIEW:
-        {json.dumps(overview_result, indent=2)}
-        
+        {json_util.dumps(overview_result, indent=2)}
+
         DOCUMENT INVENTORY:
-        {json.dumps(documents_result, indent=2)}
+        {json_util.dumps(documents_result, indent=2)}
         
         USER QUERY: {state["user_query"]}
         
@@ -220,7 +214,6 @@ async def orientation_node(state: ReactAgentState, config: RunnableConfig) -> Co
             SystemMessage(content=analysis_prompt)
         ])
         
-        # Add analysis to scratchpad
         analysis_entry = ScratchpadEntry(
             step=step_num + 1,
             type="Observation",
@@ -230,7 +223,8 @@ async def orientation_node(state: ReactAgentState, config: RunnableConfig) -> Co
         return Command(
             update={
                 "scratchpad": [orientation_entry, analysis_entry],
-                "manifest_overview": manifest_overview
+                "manifest_overview": manifest_overview,
+                "intermediate_results": [orientation_intermediate_result],
             },
             goto="planner"
         )
@@ -252,14 +246,11 @@ async def orientation_node(state: ReactAgentState, config: RunnableConfig) -> Co
 
 
 async def planner_node(state: ReactAgentState, config: RunnableConfig) -> Command[Literal["tool_executor", "synthesizer"]]:
-    """
-    Central reasoning engine - analyzes state and determines next actions using ReAct/Chain-of-Thought.
-    """
+    """Central reasoning engine - analyzes state and determines next actions using ReAct/Chain-of-Thought."""
     step_num = len(state["scratchpad"]) + 1
     iterations = state.get("iterations", 0)
     max_iterations = state.get("max_iterations", 10)
     
-    # Check iteration limit
     if iterations >= max_iterations:
         limit_entry = ScratchpadEntry(
             step=step_num,
@@ -275,7 +266,6 @@ async def planner_node(state: ReactAgentState, config: RunnableConfig) -> Comman
             goto="synthesizer"
         )
     
-    # Add planning step to scratchpad
     planning_entry = ScratchpadEntry(
         step=step_num,
         type="Thought",
@@ -283,7 +273,6 @@ async def planner_node(state: ReactAgentState, config: RunnableConfig) -> Comman
     )
     
     try:
-        # Build context for planning
         context = {
             "user_query": state["user_query"],
             "tender_id": state["tender_id"],
@@ -302,10 +291,10 @@ async def planner_node(state: ReactAgentState, config: RunnableConfig) -> Comman
         Iteration: {context["iteration"]}
         
         MANIFEST OVERVIEW:
-        {json.dumps(context["manifest_overview"], indent=2)}
+        {json_util.dumps(context["manifest_overview"], indent=2)}
         
         PREVIOUS RESULTS:
-        {json.dumps([r.result_data for r in context["previous_results"]], indent=2)}
+        {json_util.dumps([r.result_data for r in context["previous_results"]], indent=2)}
         
         SCRATCHPAD HISTORY:
         {chr(10).join([f"Step {s.step} ({s.type}): {s.content}" for s in context["scratchpad_history"]])}
@@ -319,11 +308,9 @@ async def planner_node(state: ReactAgentState, config: RunnableConfig) -> Comman
         ])
         
         plan_content = response.content
-        
-        # Parse response to determine next action
+
         plan_lower = plan_content.lower()
-        
-        # Check if ready for synthesis
+
         if any(phrase in plan_lower for phrase in ["synthesize", "synthesis", "sufficient information", "ready to answer", "recommend synthesis"]):
             synthesis_entry = ScratchpadEntry(
                 step=step_num + 1,
@@ -339,8 +326,7 @@ async def planner_node(state: ReactAgentState, config: RunnableConfig) -> Comman
                 },
                 goto="synthesizer"
             )
-        
-        # Otherwise, plan tool execution
+
         action_entry = ScratchpadEntry(
             step=step_num + 1,
             type="Action", 
@@ -371,16 +357,12 @@ async def planner_node(state: ReactAgentState, config: RunnableConfig) -> Comman
             goto="synthesizer"
         )
 
-
 async def tool_executor_node(state: ReactAgentState, config: RunnableConfig) -> Command[Literal["reflection"]]:
-    """
-    Tool executor node - executes the plan by calling appropriate tools.
-    """
+    """Tool executor node - executes the plan by calling appropriate tools."""
     step_num = len(state["scratchpad"]) + 1
     current_plan = state.get("current_plan", "")
     tender_id = state.get("tender_id")
     
-    # Add execution step to scratchpad
     execution_entry = ScratchpadEntry(
         step=step_num,
         type="Action",
@@ -390,19 +372,15 @@ async def tool_executor_node(state: ReactAgentState, config: RunnableConfig) -> 
     intermediate_results = []
     
     try:
-        # Parse plan to determine which tools to execute
-        # This is a simplified implementation - in production, you'd want more sophisticated plan parsing
         plan_lower = current_plan.lower()
         
-        # Execute targeted search only if tender_id is available
         if tender_id and ("search" in plan_lower or "targeted_hybrid_search" in plan_lower):
-            # Execute targeted search
-            search_query = state["user_query"]  # Could be extracted more intelligently from plan
+            search_query = state["user_query"]
             
             search_results = await targeted_hybrid_search.ainvoke({
                 "query": search_query,
                 "tender_id": tender_id,
-                "file_id_filters": None  # Could be parsed from plan
+                "file_id_filters": None
             })
             
             if search_results:
@@ -414,9 +392,7 @@ async def tool_executor_node(state: ReactAgentState, config: RunnableConfig) -> 
                 )
                 intermediate_results.append(intermediate_result)
         
-        # Execute manifest consultation only if tender_id is available
         if tender_id and ("manifest" in plan_lower or "consult_tender_manifest" in plan_lower):
-            # Execute manifest consultation
             manifest_results = await consult_tender_manifest.ainvoke({
                 "action": "list_documents",
                 "tender_id": tender_id
@@ -431,10 +407,8 @@ async def tool_executor_node(state: ReactAgentState, config: RunnableConfig) -> 
                 )
                 intermediate_results.append(intermediate_result)
         
-        # Execute web search when requested or when no tender_id (default for web-only mode)
         if "web_search" in plan_lower or "external" in plan_lower or not tender_id:
-            # Execute web search - no tender_id required
-            search_query = state["user_query"]  # Could be extracted more intelligently from plan
+            search_query = state["user_query"]
             
             web_results = await web_search.ainvoke({
                 "query": search_query
@@ -449,7 +423,6 @@ async def tool_executor_node(state: ReactAgentState, config: RunnableConfig) -> 
                 )
                 intermediate_results.append(intermediate_result)
         
-        # Create observation entry
         observation_entry = ScratchpadEntry(
             step=step_num + 1,
             type="Observation",
@@ -481,13 +454,10 @@ async def tool_executor_node(state: ReactAgentState, config: RunnableConfig) -> 
 
 
 async def reflection_node(state: ReactAgentState, config: RunnableConfig) -> Command[Literal["planner", "synthesizer"]]:
-    """
-    Reflection node - evaluates tool effectiveness and determines next steps.
-    """
+    """Reflection node - evaluates tool effectiveness and determines next steps."""
     step_num = len(state["scratchpad"]) + 1
     recent_results = state.get("intermediate_results", [])
     
-    # Add reflection step to scratchpad
     reflection_entry = ScratchpadEntry(
         step=step_num,
         type="Thought",
@@ -495,9 +465,8 @@ async def reflection_node(state: ReactAgentState, config: RunnableConfig) -> Com
     )
     
     try:
-        # Build context for reflection
         results_summary = []
-        for result in recent_results[-3:]:  # Look at last 3 results
+        for result in recent_results[-3:]:
             results_summary.append({
                 "tool": result.tool_name,
                 "data_size": len(str(result.result_data)),
@@ -510,7 +479,7 @@ async def reflection_node(state: ReactAgentState, config: RunnableConfig) -> Com
         USER QUERY: {state["user_query"]}
         
         RECENT RESULTS SUMMARY:
-        {json.dumps(results_summary, indent=2)}
+        {json_util.dumps(results_summary, indent=2)}
         
         SCRATCHPAD HISTORY (last 5 steps):
         {chr(10).join([f"Step {s.step} ({s.type}): {s.content}" for s in state.get("scratchpad", [])[-5:]])}
@@ -526,7 +495,6 @@ async def reflection_node(state: ReactAgentState, config: RunnableConfig) -> Com
         reflection_content = response.content
         reflection_lower = reflection_content.lower()
         
-        # Determine next action based on reflection
         if "synthesize" in reflection_lower or "sufficient" in reflection_lower:
             route = "synthesizer"
             decision = "SYNTHESIZE"
@@ -563,12 +531,9 @@ async def reflection_node(state: ReactAgentState, config: RunnableConfig) -> Com
 
 
 async def synthesizer_node(state: ReactAgentState, config: RunnableConfig) -> Dict[str, Any]:
-    """
-    Synthesizer node - generates final comprehensive answer with citations.
-    """
+    """Synthesizer node - generates final comprehensive answer with citations."""
     step_num = len(state["scratchpad"]) + 1
     
-    # Add synthesis step to scratchpad
     synthesis_entry = ScratchpadEntry(
         step=step_num,
         type="Action",
@@ -576,11 +541,9 @@ async def synthesizer_node(state: ReactAgentState, config: RunnableConfig) -> Di
     )
     
     try:
-        # Gather all information for synthesis
         all_results = state.get("intermediate_results", [])
         user_query = state["user_query"]
         
-        # Build comprehensive context
         file_sources = set()
         web_sources = set()
         result_data = []
@@ -593,7 +556,6 @@ async def synthesizer_node(state: ReactAgentState, config: RunnableConfig) -> Di
             file_sources.update(result.file_sources)
             web_sources.update(result.web_sources)
         
-        # Build context-aware synthesis prompt
         tender_context = ""
         if state.get("tender_id"):
             tender_context = f"TENDER ID: {state['tender_id']}\nThis analysis is for a specific tender/procurement opportunity.\n\n"
@@ -606,7 +568,7 @@ async def synthesizer_node(state: ReactAgentState, config: RunnableConfig) -> Di
         {tender_context}USER QUERY: {user_query}
         
         GATHERED INFORMATION:
-        {json.dumps(result_data, indent=2)}
+        {json_util.dumps(result_data, indent=2)}
         
         AVAILABLE FILE SOURCES: {list(file_sources)}
         AVAILABLE WEB SOURCES: {list(web_sources)}
@@ -621,14 +583,12 @@ async def synthesizer_node(state: ReactAgentState, config: RunnableConfig) -> Di
         
         final_answer = response.content
         
-        # Add completion to scratchpad
         completion_entry = ScratchpadEntry(
             step=step_num + 1,
             type="Observation",
             content="Final answer synthesized successfully"
         )
         
-        # Create final AI message with the answer
         final_message = AIMessage(content=final_answer)
         
         return {
@@ -642,8 +602,7 @@ async def synthesizer_node(state: ReactAgentState, config: RunnableConfig) -> Di
             type="Observation",
             content=f"Synthesis failed with error: {str(e)}"
         )
-        
-        # Provide fallback answer
+
         fallback_message = AIMessage(
             content=f"I apologize, but I encountered an error while synthesizing the final answer. "
                    f"Based on the information gathered, I can provide a partial response to your query: {state['user_query']}. "

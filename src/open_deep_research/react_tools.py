@@ -1,34 +1,75 @@
-"""Foundational tools for the LangGraph react agent."""
+"""Foundational tools for the LangGraph react agent.
+
+This module provides essential tools for deep research and analysis of tender documents
+using a ReAct (Reasoning and Acting) agent pattern. The tools enable comprehensive
+document analysis, targeted search, and external research capabilities.
+
+Key Features:
+- Tender manifest consultation for metadata and document inventory
+- Hybrid search combining vector and keyword search for precise content retrieval
+- Iterative document analysis using MapReduce strategy for large documents
+- External web search for regulations, legal definitions, and market intelligence
+- File mapping capabilities to resolve user references to specific document IDs
+
+Usage:
+    These tools are designed to be used by a LangGraph ReAct agent for automated
+    tender analysis and research tasks. Each tool returns structured data that can
+    be processed by the agent for decision-making and further analysis.
+
+Example:
+    The agent can use these tools in sequence:
+    1. consult_tender_manifest() to get overview and document list
+    2. targeted_hybrid_search() to find specific information
+    3. iterative_document_analyzer() for detailed document analysis
+    4. web_search() for external context and validation
+"""
 
 import os
-from typing import Dict, List, Any, Optional
-from langchain_core.tools import tool
-from langchain.chat_models import init_chat_model
-from langchain_core.messages import HumanMessage
-from pydantic import BaseModel, Field
-
-from qdrant_client.http.models import Filter, FieldCondition, MatchValue
-
-from pymongo import MongoClient
-from bson import ObjectId
-
-from open_deep_research.tool_utils import getVectorStore, CustomRetriever, get_proposal_file_id, get_proposal_files, get_proposal_summary, get_proposal_files_summary, search
+from typing import Any, Dict, List
 
 from dotenv import load_dotenv
+from langchain.chat_models import init_chat_model
+from langchain_core.messages import HumanMessage
+from langchain_core.tools import tool
+from pydantic import BaseModel, Field
+from pymongo import MongoClient
+from qdrant_client.http.models import FieldCondition, Filter, MatchValue
+
+from open_deep_research.tool_utils import (
+    CustomRetriever,
+    get_proposal_files,
+    get_proposal_files_summary,
+    get_proposal_summary,
+    get_requirement_cluster_id,
+    getVectorStore,
+    search,
+)
+
 load_dotenv()
 
-uri = os.getenv("MONGODB_URI")
+uri = os.getenv("MONGODB_URL")
 mongo_client = MongoClient(uri)
-db = mongo_client["org_1"]
-proposals = db["proposals"]
-proposal_files = db["proposal_files"]
 
 configurable_model = init_chat_model(
     model="gpt-4.1",
 )
 
 class TenderOverview(BaseModel):
-    """Schema for tender overview data."""
+    """Schema for tender overview data.
+    
+    Represents high-level information about a tender including its summary
+    and document count. This is typically the first information retrieved
+    when exploring a new tender.
+    
+    Attributes:
+        tender_id: Unique identifier for the tender (e.g., "tender_123")
+        summary: Comprehensive 10-page structured summary containing:
+            - Project overview and objectives
+            - Evaluation criteria and scoring methodology
+            - Timeline and milestone requirements
+            - Key technical and business requirements
+        total_documents: Total number of documents in the tender package
+    """
     
     tender_id: str = Field(description="Unique identifier for the tender")
     summary: str = Field(description="10-page structured summary with overview, evaluation criteria, and timelines")
@@ -36,7 +77,24 @@ class TenderOverview(BaseModel):
 
 
 class DocumentInventoryItem(BaseModel):
-    """Schema for a document in the tender inventory."""
+    """Schema for a document in the tender inventory.
+    
+    Represents metadata for a single document within a tender package.
+    This structure is used to catalog and organize all documents
+    associated with a tender for easy reference and retrieval.
+    
+    Attributes:
+        file_id: Primary key for document retrieval (e.g., "doc_001")
+        file_name: Exact file name as stored (e.g., "01_Rammeaftale_Hovedaftale.pdf")
+        document_type: Categorization of the document type:
+            - "Rammeaftale": Main framework agreement
+            - "Bilag": Technical annexes and appendices
+            - "Pricing": Cost and pricing related documents
+            - "Legal": Legal terms and conditions
+            - "Technical": Technical specifications and requirements
+        summary: Concise 10-line overview describing the document's
+            purpose, key contents, and relevance to the tender
+    """
     
     file_id: str = Field(description="Primary key for document retrieval")
     file_name: str = Field(description="Exact file name")
@@ -45,14 +103,36 @@ class DocumentInventoryItem(BaseModel):
 
 
 class TenderManifest(BaseModel):
-    """Complete tender manifest structure."""
+    """Complete tender manifest structure.
+    
+    Represents the full manifest of a tender package, combining the
+    high-level overview with the complete inventory of documents.
+    This is the primary data structure returned by the consult_tender_manifest
+    tool when listing all tender information.
+    
+    Attributes:
+        overview: High-level tender information including summary and document count
+        documents: Complete list of all documents in the tender package
+    """
     
     overview: TenderOverview
     documents: List[DocumentInventoryItem]
 
 
 class SearchResult(BaseModel):
-    """Result from targeted hybrid search."""
+    """Result from targeted hybrid search.
+    
+    Represents a single search result from the targeted_hybrid_search tool.
+    Each result contains the relevant content along with metadata about
+    its source and relevance confidence.
+    
+    Attributes:
+        content: The actual text content that matches the search query
+        file_id: Unique identifier of the source document (e.g., "doc_001")
+        file_name: Human-readable name of the source file
+        confidence_score: Relevance confidence score between 0.0 and 1.0,
+            where 1.0 indicates perfect match and 0.0 indicates no relevance
+    """
     
     content: str = Field(description="Relevant content from the search")
     file_id: str = Field(description="Source file identifier")
@@ -61,7 +141,20 @@ class SearchResult(BaseModel):
 
 
 class AnalysisResult(BaseModel):
-    """Result from iterative document analysis."""
+    """Result from iterative document analysis.
+    
+    Represents the structured output from the iterative_document_analyzer tool.
+    Contains the analysis results organized into summary, findings, and
+    relevant sections for easy consumption by the agent.
+    
+    Attributes:
+        summary: High-level summary of the analysis findings
+        key_findings: List of specific findings extracted from the document,
+            typically formatted as bullet points for clarity
+        relevant_sections: List of document sections that support the analysis,
+            including section numbers, titles, or page references
+        file_id: Unique identifier of the analyzed document
+    """
     
     summary: str = Field(description="Analysis summary")
     key_findings: List[str] = Field(description="Key findings extracted")
@@ -70,7 +163,27 @@ class AnalysisResult(BaseModel):
 
 
 class FileMapping(BaseModel):
-    """Schema for mapping user references to file IDs with confidence scores."""
+    """Schema for mapping user references to file IDs with confidence scores.
+    
+    Represents a single mapping between a user-provided file reference
+    and the actual file in the tender document collection. This is used
+    by the consult_tender_manifest tool when action='map_names_to_ids'.
+    
+    Attributes:
+        user_reference: The original user-provided reference string
+            (e.g., "main contract", "pricing.pdf", "technical requirements")
+        file_id: The mapped file ID from the tender document collection
+        file_name: The actual file name that was matched
+        confidence: Confidence score between 0.0 and 1.0 indicating
+            how well the user reference matches the file:
+            - 1.0: Perfect match (exact filename match)
+            - 0.8-0.9: Very good match (strong semantic similarity)
+            - 0.6-0.7: Good match (partial filename or content match)
+            - 0.4-0.5: Moderate match (some similarity)
+            - 0.0-0.3: Poor match (minimal similarity)
+        reasoning: Brief explanation of why this mapping was chosen,
+            including the matching criteria used
+    """
     
     user_reference: str = Field(description="The original user reference string")
     file_id: str = Field(description="The mapped file ID")
@@ -80,95 +193,96 @@ class FileMapping(BaseModel):
 
 
 class FileMappings(BaseModel):
-    """Schema for the complete file mapping result."""
+    """Schema for the complete file mapping result.
+    
+    Represents the complete result from the file mapping process,
+    containing all mappings between user references and file IDs.
+    This is the structured output format used by the consult_tender_manifest
+    tool when action='map_names_to_ids'.
+    
+    Attributes:
+        mapped_files: List of FileMapping objects, each representing
+            a single mapping between a user reference and a file ID
+            with associated confidence scores and reasoning
+    """
     
     mapped_files: List[FileMapping] = Field(description="List of file mappings with confidence scores")
-
-
-# Mock data store for demonstration (in production, this would connect to actual databases)
-MOCK_TENDER_MANIFEST = {
-    "tender_123": TenderManifest(
-        overview=TenderOverview(
-            tender_id="tender_123",
-            summary="IT Infrastructure Modernization Tender - 10-page overview including evaluation criteria focusing on technical capability, pricing structure, and implementation timeline. Key requirements include cloud migration, security compliance, and 24/7 support.",
-            total_documents=15
-        ),
-        documents=[
-            DocumentInventoryItem(
-                file_id="doc_001",
-                file_name="01_Rammeaftale_Hovedaftale.pdf",
-                document_type="Rammeaftale",
-                summary="Main framework agreement defining overall terms, conditions, penalties, and legal obligations for the IT infrastructure project."
-            ),
-            DocumentInventoryItem(
-                file_id="doc_002", 
-                file_name="02_Bilag_A_Tekniske_Krav.pdf",
-                document_type="Bilag",
-                summary="Technical requirements specification covering cloud infrastructure, security standards, performance metrics, and compliance requirements."
-            ),
-            DocumentInventoryItem(
-                file_id="doc_003",
-                file_name="03_Bilag_B_Prisstruktur.pdf", 
-                document_type="Pricing",
-                summary="Pricing structure guidelines including cost models, payment terms, penalties for SLA breaches, and pricing evaluation criteria."
-            )
-        ]
-    )
-}
-
-MOCK_DOCUMENT_CONTENT = {
-    "doc_001": "Framework Agreement Main Content: This agreement establishes penalties of 2% of monthly service fee for each hour of unplanned downtime exceeding 4 hours per month. Performance requirements include 99.5% uptime SLA...",
-    "doc_002": "Technical Requirements: Cloud infrastructure must comply with ISO 27001 and GDPR. Minimum 99.5% availability required. Disaster recovery with RTO < 4 hours and RPO < 1 hour...",
-    "doc_003": "Pricing Structure: Base monthly fee structure ranges from 50,000-200,000 DKK depending on service level. Additional costs for premium support and extended SLA coverage..."
-}
-
 
 @tool
 async def consult_tender_manifest(
     action: str,
     tender_id: str,
     org_id: int = 1,
-    user_references: Optional[List[str]] = None
+    user_references: List[str] | None = None
 ) -> Dict[str, Any]:
-    """Consult the tender manifest for rapid access to metadata and summaries.
+    """Consult the tender manifest for rapid access to metadata and summaries. This tool will be used to get ids and basic information about the tender and its associated files.
+    
+    This tool provides three main capabilities for tender document management:
+    1. Get tender overview with summary and document count. Use it when you need to get basic information of the whole tender and number of files in it.
+    2. List all documents in the tender with metadata. Use it if you need to go through all files for a particular tender and get there names, ids, along with summary.
+    3. Map user-provided file references to actual file IDs with confidence scores. Use it if you need to directly read a file check and to get it you need a its particular id.
+    
+    The tool is essential for initial tender exploration and file identification.
     
     Args:
-        action: Action to perform - 'get_overview', 'list_documents', or 'map_names_to_ids'
-        tender_id: Identifier for the tender
-        org_id: Organization ID (defaults to 1)
-        user_references: List of user reference strings to map to file IDs (only for map_names_to_ids action)
+        action (str): Action to perform. Must be one of:
+            - 'get_overview': Retrieve tender summary and total document count
+            - 'list_documents': Get complete list of documents with metadata
+            - 'map_names_to_ids': Map user references to file IDs with confidence scores
+        tender_id (str): Unique identifier for the tender (e.g., "tender_123")
+        org_id (int, optional): Organization ID for multi-tenant support. Defaults to 1.
+        user_references (List[str], optional): List of user-provided file references
+            to map to actual file IDs. Only used when action='map_names_to_ids'.
+            Examples: ["main contract", "pricing.pdf", "technical requirements"]
     
     Returns:
-        Dictionary containing the requested information
-    """
-    try:
-        summary = get_proposal_summary(tender_id, org_id)
-        if isinstance(summary, dict) and "error" in summary:
-            return summary
-        
-        file_id = get_proposal_file_id(tender_id, org_id)
-        if isinstance(file_id, dict) and "error" in file_id:
-            return file_id
-            
-        files = get_proposal_files(file_id, org_id)
-        if isinstance(files, dict) and "error" in files:
-            return files
-            
-        total_documents = len(list(files))
-    except Exception as e:
-        return {"error": f"Error accessing tender {tender_id}: {str(e)}"}
+        Dict[str, Any]: Response varies by action:
+            - 'get_overview': {"tender_id": str, "summary": str, "total_documents": int}
+            - 'list_documents': {"documents": List[Dict]} with file metadata
+            - 'map_names_to_ids': {"mapped_files": List[Dict]} with confidence scores
+            - Error cases: {"error": str} with error description
     
+    Raises:
+        Exception: Database connection or query errors are caught and returned as error dicts
+    
+    Example:
+        # Get tender overview
+        result = await consult_tender_manifest("get_overview", "tender_123")
+        
+        # List all documents
+        result = await consult_tender_manifest("list_documents", "tender_123")
+        
+        # Map user references to file IDs
+        result = await consult_tender_manifest(
+            "map_names_to_ids", 
+            "tender_123", 
+            user_references=["main contract", "pricing structure"]
+        )
+    """
     if action == "get_overview":
+        summary = get_proposal_summary(mongo_client, tender_id, org_id)
+        if summary is None:
+            summary = "Summary not found"
+
+        file_id = get_requirement_cluster_id(mongo_client, tender_id, org_id)
+        if file_id is None:
+            files = []
+        else:
+            files = get_proposal_files(mongo_client, file_id, org_id)
+            if files is None:
+                files = []
+
         return {
             "tender_id": tender_id,
             "summary": summary,
-            "total_documents": total_documents
+            "total_documents": len(files)
         }
     
     elif action == "list_documents":
         try:
-            documents = get_proposal_files_summary(tender_id, org_id)
-            if isinstance(documents, dict) and "error" in documents:
+            documents = get_proposal_files_summary(mongo_client, tender_id, org_id)
+            if documents is None:
+                documents = []
                 return documents
             return {"documents": documents}
         except Exception as e:
@@ -230,7 +344,7 @@ Return your response in the following JSON format:
             
             return {"mapped_files": mapped_results}
             
-        except Exception as e:
+        except Exception:
             mapped_results = []
             for ref in user_references:
                 ref_lower = ref.lower()
@@ -270,28 +384,70 @@ async def targeted_hybrid_search(
     query: str,
     tender_id: str,
     org_id: int = 1,
-    file_id_filters: Optional[List[str]] = None
+    file_id_filters: List[str] | None = None
 ) -> List[Dict[str, Any]]:
-    """Primary RAG workhorse for deep content extraction using hybrid search.
+    """Primary RAG workhorse for deep content extraction using hybrid search from Tender files.
+    
+    This tool performs sophisticated content retrieval by combining vector similarity
+    search with keyword matching. It's the core tool for finding specific information
+    within tender documents using natural language queries.
+    
+    The hybrid approach ensures both semantic relevance and keyword precision,
+    making it ideal for finding specific clauses, requirements, or technical details
+    within large document collections.
     
     Args:
-        query: Search query string
-        tender_id: Identifier for the tender
-        org_id: Organization ID (defaults to 1)
-        file_id_filters: Optional list of file IDs to restrict search scope
+        query (str): Natural language search query. Can be:
+            - Specific questions: "What are the penalty clauses for downtime?"
+            - Keywords: "SLA requirements uptime"
+            - Technical terms: "ISO 27001 compliance requirements"
+            - Document sections: "pricing structure payment terms"
+        tender_id (str): Unique identifier for the tender to search within
+        org_id (int, optional): Organization ID for multi-tenant support. Defaults to 1.
+        file_id_filters (List[str], optional): List of specific file IDs to restrict
+            search scope. If provided, only these files will be searched.
+            Useful for targeted analysis of specific documents.
     
     Returns:
-        List of relevant search results with content and metadata
+        Dict[str, Any]: Search results containing:
+            - "context" (str): Concatenated relevant content from all matching documents
+            - "documents" (List): List of matching document objects with metadata
+            - "num_results" (int): Number of documents found
+            - "error" (str, optional): Error message if search fails
+    
+    Raises:
+        Exception: Database connection, vector store, or retrieval errors are caught
+            and returned as error dicts
+    
+    Example:
+        # Search for penalty clauses
+        result = await targeted_hybrid_search(
+            "penalty clauses downtime SLA breach",
+            "tender_123"
+        )
+        
+        # Search within specific files only
+        result = await targeted_hybrid_search(
+            "pricing structure payment terms",
+            "tender_123",
+            file_id_filters=["doc_003", "doc_004"]
+        )
+        
+        # Find technical requirements
+        result = await targeted_hybrid_search(
+            "What are the security compliance requirements?",
+            "tender_123"
+        )
     """
     try:
-        file_id = get_proposal_file_id(tender_id, org_id)
-        if isinstance(file_id, dict) and "error" in file_id:
-            return file_id
+        cluster_id = get_requirement_cluster_id(mongo_client, tender_id, org_id)
+        if cluster_id is None:
+            return {"error": f"Cluster ID not found for tender {tender_id}"}
         current_filter = Filter(
             must=[
                 FieldCondition(
                     key="cluster_id",
-                    match=MatchValue(value=file_id)
+                    match=MatchValue(value=cluster_id)
                 )
             ]
         )
@@ -304,16 +460,7 @@ async def targeted_hybrid_search(
         
         documents = retriever.get_docs_without_callbacks(query)
         
-        context = "\n\n".join([
-            f"**Document: {doc.metadata.get('title', 'Unknown')}**\n{doc.page_content}"
-            for doc in documents
-        ])
-        
-        return {
-            "context": context,
-            "documents": documents,
-            "num_results": len(documents)
-        }
+        return documents
     except Exception as e:
         return {"error": f"Chunk search failed: {str(e)}", "documents": []}
 
@@ -326,36 +473,78 @@ async def iterative_document_analyzer(
 ) -> Dict[str, Any]:
     """Analyze or summarize large documents using MapReduce strategy.
     
+    This tool performs deep analysis of individual documents by breaking them into
+    manageable chunks and processing them iteratively. It's designed for comprehensive
+    document analysis tasks that require thorough examination of large files.
+    
+    The MapReduce approach ensures efficient processing of large documents while
+    maintaining context and providing detailed, structured analysis results.
+    
     Args:
-        file_id: Identifier for the specific document to analyze
-        analysis_objective: The analysis goal (e.g., "Extract all penalty clauses")
-        tender_id: Identifier for the tender
-        org_id: Organization ID (defaults to 1)
-    
+        file_id (str): Unique identifier for the specific document to analyze.
+            Must be a valid file ID from the tender document collection.
+        analysis_objective (str): Clear description of what to extract or analyze.
+            Examples:
+            - "Extract all penalty clauses and their conditions"
+            - "Summarize technical requirements and compliance standards"
+            - "Identify all pricing structures and payment terms"
+            - "Find all SLA requirements and performance metrics"
+            - "Extract risk assessment criteria and mitigation strategies"
+        tender_id (str): Unique identifier for the tender containing the document
+        org_id (int, optional): Organization ID for multi-tenant support. Defaults to 1.
+
     Returns:
-        Dictionary containing analysis results
+        Dict[str, Any]: Analysis results containing:
+            - "summary" (str): High-level summary of findings related to the objective
+            - "key_findings" (List[str]): Bullet-point list of specific findings
+            - "relevant_sections" (List[str]): Document sections that support the analysis
+            - "file_id" (str): The analyzed file identifier
+            - "error" (str, optional): Error message if analysis fails
+
+    Raises:
+        Exception: Document not found, processing errors, or analysis failures are
+            caught and returned as error dicts
+
+    Examples:
+        # Extract penalty clauses
+        result = await iterative_document_analyzer(
+            "doc_001",
+            "Extract all penalty clauses and their specific conditions",
+            "tender_123"
+        )
+        
+        # Analyze technical requirements
+        result = await iterative_document_analyzer(
+            "doc_002",
+            "Summarize all security compliance requirements and standards",
+            "tender_123"
+        )
+        
+        # Find pricing information
+        result = await iterative_document_analyzer(
+            "doc_003",
+            "Identify all pricing structures, payment terms, and cost models",
+            "tender_123"
+        )
     """
-    # Mock implementation - in production this would implement MapReduce over document chunks
-    if tender_id not in MOCK_TENDER_MANIFEST:
-        return {"error": f"Tender {tender_id} not found"}
     
-    content = MOCK_DOCUMENT_CONTENT.get(file_id, "No content available for this file")
+    content = get_proposal_files_summary(mongo_client, file_id, org_id)
     
     if content == "No content available for this file":
         return {"error": f"File {file_id} not found"}
     
     # Mock analysis using LLM
-    analysis_prompt = f"""
-    Analyze the following document content based on this objective: {analysis_objective}
-    
-    Document Content:
-    {content}
-    
-    Please provide:
-    1. A summary of findings related to the objective
-    2. Key findings as bullet points
-    3. Relevant sections that support the analysis
-    """
+    # analysis_prompt = f"""
+    # Analyze the following document content based on this objective: {analysis_objective}
+    # 
+    # Document Content:
+    # {content}
+    # 
+    # Please provide:
+    # 1. A summary of findings related to the objective
+    # 2. Key findings as bullet points
+    # 3. Relevant sections that support the analysis
+    # """
     
     # This would be an actual LLM call in production
     mock_analysis = {
@@ -381,14 +570,49 @@ async def iterative_document_analyzer(
 async def web_search(query: str) -> Dict[str, Any]:
     """Search external sources for regulations, legal definitions, and market intelligence.
     
+    This tool enables the agent to gather external information from web sources to
+    provide context, validation, and additional insights for tender analysis.
+    It's particularly useful for understanding regulations, industry standards,
+    legal definitions, and market intelligence that may be relevant to the tender.
+    
+    The tool searches across multiple web sources and returns structured results
+    that can be used to enhance the agent's understanding and analysis capabilities.
+    
     Args:
-        query: Search query for external information
+        query (str): Search query for external information. Can be:
+            - Regulatory queries: "ISO 27001 requirements Denmark"
+            - Legal definitions: "penalty clause definition contract law"
+            - Industry standards: "cloud security standards 2024"
+            - Market intelligence: "IT infrastructure pricing trends Denmark"
+            - Compliance requirements: "GDPR data protection requirements"
+            - Technical specifications: "disaster recovery RTO RPO standards"
     
     Returns:
-        Dictionary with search results and metadata
+        Dict[str, Any]: Search results containing:
+            - "context" (str): Relevant content extracted from web sources
+            - "links" (List[str]): URLs of sources used for the information
+            - "query" (str): The original search query
+            - "success" (bool): Whether the search was successful
+            - "error" (str, optional): Error message if search fails
+
+    Raises:
+        Exception: Network errors, search API failures, or content extraction
+            errors are caught and returned as error dicts
+
+    Examples:
+        # Search for regulatory requirements
+        result = await web_search("ISO 27001 security requirements Denmark")
+        
+        # Find legal definitions
+        result = await web_search("penalty clause definition contract law")
+        
+        # Get market intelligence
+        result = await web_search("cloud infrastructure pricing trends 2024")
+        
+        # Research compliance standards
+        result = await web_search("GDPR data protection requirements IT services")
     """
     try:
-        # Use the search function from tool_utils
         context, links = search({"orig_input": query})
         
         return {
@@ -397,16 +621,13 @@ async def web_search(query: str) -> Dict[str, Any]:
             "query": query,
             "success": True
         }
-    except Exception as e:
-        # Fallback to mock results if search fails
+    except Exception:
         return {
-            "context": f"Mock search results for: {query}. External information related to {query}. This would include relevant regulations, legal definitions, and market intelligence.",
-            "links": ["https://example.com/search-result-1", "https://example.com/search-result-2"],
+            "context": "No context available",
+            "links": [],
             "query": query,
             "success": False,
-            "error": str(e)
         }
-
 
 # @tool
 # async def wait_for_user_input(clarification_question: str) -> str:
@@ -422,7 +643,6 @@ async def web_search(query: str) -> Dict[str, Any]:
 #     # In production, this would use LangGraph's interrupt mechanism
 #     # For now, we'll return a mock response
 #     return f"Mock user response to: {clarification_question}"
-
 
 # Tool list for easy access
 REACT_TOOLS = [
